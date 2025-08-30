@@ -1,0 +1,232 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CUDA_VERSION: "11.8"
+  PYTHON_VERSION: "3.9"
+  TENSORRT_VERSION: "8.6"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, 3.10]
+        cuda-version: [11.8, 12.1]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    
+    - name: Install CUDA
+      uses: Jimver/cuda-toolkit@v0.2.7
+      with:
+        cuda: ${{ matrix.cuda-version }}
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake git
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+        pip install triton
+        pip install pytest pytest-cov
+        pip install numpy onnx onnxruntime
+        pip install tensorrt  # Note: This may fail without proper TensorRT installation
+    
+    - name: Run tests
+      run: |
+        python -m pytest tests/ -v --cov=kernels --cov=src --cov-report=xml
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+    
+    - name: Install CUDA
+      uses: Jimver/cuda-toolkit@v0.2.7
+      with:
+        cuda: "11.8"
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake git
+    
+    - name: Install Python dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+        pip install triton
+        pip install numpy onnx onnxruntime
+    
+    - name: Build TensorRT plugin
+      run: |
+        cd kernels/trt_plugin_skeleton
+        mkdir build && cd build
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+        make -j$(nproc)
+    
+    - name: Test ONNX export
+      run: |
+        python src/export_onnx.py --vocab_size 1000 --embedding_dim 64 --num_features 8
+    
+    - name: Test TensorRT engine build
+      run: |
+        python src/build_engine.py --onnx prefill.onnx --engine prefill.engine --mode api --validate
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: build
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+        pip install triton
+        pip install numpy onnx onnxruntime
+    
+    - name: Run integration tests
+      run: |
+        # Test interaction kernel
+        python kernels/triton_ops/autotune_interaction.py --B 4 --F 16 --D 64 --blocks 32,64,128 --iters 10
+        
+        # Test embedding service
+        python -c "
+        from src.embedding_service import EmbeddingService
+        service = EmbeddingService(num_items=1000, emb_dim=64, gpu_cache_size=256)
+        embeddings = service.lookup_batch([1, 2, 3, 4, 5])
+        print(f'Embedding service test passed: {embeddings.shape}')
+        "
+
+  lint:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: 3.9
+    
+    - name: Install linting tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install flake8 black isort mypy
+    
+    - name: Run linters
+      run: |
+        # Check code formatting
+        black --check --diff src/ kernels/ tests/
+        
+        # Check import sorting
+        isort --check-only --diff src/ kernels/ tests/
+        
+        # Check code style
+        flake8 src/ kernels/ tests/ --max-line-length=100 --ignore=E203,W503
+        
+        # Type checking (optional)
+        mypy src/ --ignore-missing-imports
+
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Run security scan
+      uses: github/codeql-action/init@v2
+      with:
+        languages: python
+    
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v2
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [test, build]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Build Docker image
+      run: |
+        docker build -t gr-inference-opt:latest .
+    
+    - name: Test Docker image
+      run: |
+        docker run --rm gr-inference-opt:latest python -c "
+        print('Docker image test passed')
+        "
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [test, build, integration-test, lint, security]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Create release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ github.run_number }}
+        release_name: Release v${{ github.run_number }}
+        body: |
+          Automated release from CI pipeline
+          
+          Changes:
+          - Automated build and test
+          - All checks passed
+        draft: false
+        prerelease: false
+    
+    - name: Upload build artifacts
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./kernels/trt_plugin_skeleton/build/libsimple_plugin.so
+        asset_name: simple_plugin.so
+        asset_content_type: application/octet-stream

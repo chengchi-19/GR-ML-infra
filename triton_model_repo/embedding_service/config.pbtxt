@@ -1,0 +1,47 @@
+name: "embedding_service"
+backend: "python"
+max_batch_size: 8
+
+input [
+  { 
+    name: "ids", 
+    data_type: TYPE_INT32, 
+    dims: [ -1 ]
+  }
+]
+
+output [
+  { 
+    name: "embeddings", 
+    data_type: TYPE_FP16, 
+    dims: [ -1, 32 ]
+  }
+]
+
+instance_group [
+  { 
+    kind: KIND_GPU, 
+    count: 1,
+    gpus: [ 0 ]
+  }
+]
+
+parameters {
+  key: "embedding_dim"
+  value: { string_value: "32" }
+}
+
+parameters {
+  key: "num_items"
+  value: { string_value: "50000" }
+}
+
+parameters {
+  key: "gpu_cache_size"
+  value: { string_value: "4096" }
+}
+
+parameters {
+  key: "host_cache_size"
+  value: { string_value: "20000" }
+}

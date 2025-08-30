@@ -1,0 +1,33 @@
+name: "gr_pipeline"
+platform: "ensemble"
+max_batch_size: 8
+input [ { name: "raw_input", data_type: TYPE_INT32, dims: [ -1, -1 ] } ]
+output [ { name: "final_scores", data_type: TYPE_FP32, dims: [ -1 ] } ]
+ensemble_scheduling {
+  step [
+    {
+      model_name: "preprocess_py"
+      model_version: -1
+      input_map { key: "raw_input" value: "input_ids" }
+      output_map { key: "out_feats" value: "feat_tensor" }
+    },
+    {
+      model_name: "embedding_service"
+      model_version: -1
+      input_map { key: "ids" value: "feat_tensor" }
+      output_map { key: "embeddings" value: "emb_tensor" }
+    },
+    {
+      model_name: "interaction_python"
+      model_version: -1
+      input_map { key: "embeddings" value: "emb_tensor" }
+      output_map { key: "pairwise" value: "pair_tensor" }
+    },
+    {
+      model_name: "gr_trt"
+      model_version: -1
+      input_map { key: "pair_in" value: "pair_tensor" }
+      output_map { key: "scores" value: "final_scores" }
+    }
+  ]
+}

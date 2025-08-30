@@ -1,0 +1,55 @@
+name: "interaction_python"
+backend: "python"
+max_batch_size: 8
+
+input [
+  { 
+    name: "embeddings", 
+    data_type: TYPE_FP16, 
+    dims: [ -1, -1, 32 ]
+  }
+]
+
+output [
+  { 
+    name: "pairwise", 
+    data_type: TYPE_FP32, 
+    dims: [ -1, -1 ]
+  }
+]
+
+instance_group [
+  { 
+    kind: KIND_GPU, 
+    count: 1,
+    gpus: [ 0 ]
+  }
+]
+
+parameters {
+  key: "block_size"
+  value: { string_value: "64" }
+}
+
+parameters {
+  key: "enable_fallback"
+  value: { string_value: "true" }
+}
+
+parameters {
+  key: "log_level"
+  value: { string_value: "INFO" }
+}
+
+optimization {
+  execution_accelerators {
+    gpu_execution_accelerator : [ {
+      name : "tensorrt"
+    } ]
+  }
+}
+
+dynamic_batching {
+  preferred_batch_size: [ 1, 4, 8 ]
+  max_queue_delay_microseconds: 100
+}
