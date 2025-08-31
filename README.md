@@ -10,6 +10,8 @@
 - **CUTLASS集成**: 可选的CUTLASS加速GEMM运算
 - **TensorRT插件**: 专用操作的自定义TensorRT插件
 - **生产就绪**: 完整的CI/CD流水线和Docker支持
+- **企业级用户行为**: 扩展的用户行为序列字段支持
+- **高并发处理**: 基于Triton的多线程并发推理
 
 ## 📋 系统要求
 
@@ -62,7 +64,7 @@ docker run --gpus all -p 8000:8000 -p 8001:8001 -p 8002:8002 gr-inference-opt:pr
 python src/export_onnx.py \
     --vocab_size 10000 \
     --embedding_dim 128 \
-    --num_features 16 \
+    --num_features 32 \
     --prefill prefill.onnx \
     --decode decode.onnx
 ```

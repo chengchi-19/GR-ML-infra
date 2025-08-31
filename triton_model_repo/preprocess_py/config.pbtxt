@@ -27,10 +27,25 @@ instance_group [
 
 parameters {
   key: "feature_dim"
-  value: { string_value: "16" }
+  value: { string_value: "32" }  # 扩展特征维度支持更多用户行为字段
 }
 
 parameters {
   key: "vocab_size"
   value: { string_value: "10000" }
+}
+
+parameters {
+  key: "max_sequence_length"
+  value: { string_value: "50" }
+}
+
+parameters {
+  key: "enable_extended_features"
+  value: { string_value: "true" }  # 启用扩展特征
+}
+
+parameters {
+  key: "interaction_types"
+  value: { string_value: "like,favorite,share,comment,follow" }  # 支持的交互类型
 }

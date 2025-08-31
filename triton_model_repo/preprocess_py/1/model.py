@@ -9,8 +9,10 @@ class PreprocessModel:
     
     def __init__(self):
         self.model_config = None
-        self.feature_dim = 16
+        self.feature_dim = 32  # 扩展特征维度
         self.vocab_size = 10000
+        self.max_sequence_length = 50
+        self.enable_extended_features = True
         
     def initialize(self, args: Dict[str, Any]) -> None:
         """Initialize the model with configuration"""
@@ -19,13 +21,19 @@ class PreprocessModel:
         # Parse model configuration
         try:
             if 'parameters' in self.model_config:
-                feature_dim_param = self.model_config['parameters'].get('feature_dim', {'string_value': '16'})
+                feature_dim_param = self.model_config['parameters'].get('feature_dim', {'string_value': '32'})
                 self.feature_dim = int(feature_dim_param['string_value'])
                 
                 vocab_size_param = self.model_config['parameters'].get('vocab_size', {'string_value': '10000'})
                 self.vocab_size = int(vocab_size_param['string_value'])
                 
-            logging.info(f"Preprocess model initialized: feature_dim={self.feature_dim}, vocab_size={self.vocab_size}")
+                max_seq_param = self.model_config['parameters'].get('max_sequence_length', {'string_value': '50'})
+                self.max_sequence_length = int(max_seq_param['string_value'])
+                
+                extended_param = self.model_config['parameters'].get('enable_extended_features', {'string_value': 'true'})
+                self.enable_extended_features = extended_param['string_value'].lower() == 'true'
+                
+            logging.info(f"Preprocess model initialized: feature_dim={self.feature_dim}, vocab_size={self.vocab_size}, max_seq_len={self.max_sequence_length}, extended_features={self.enable_extended_features}")
         except Exception as e:
             logging.warning(f"Failed to parse model config: {e}")
     

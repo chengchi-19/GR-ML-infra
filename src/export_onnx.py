@@ -144,7 +144,7 @@ class DecodeWrapper(nn.Module):
         )
         return logits, feature_scores, present_key_value
 
-def create_dummy_data(batch_size=1, seq_len=16, num_features=16, vocab_size=10000):
+def create_dummy_data(batch_size=1, seq_len=16, num_features=32, vocab_size=10000):
     """Create dummy data for ONNX export"""
     input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), dtype=torch.long)
     dense_features = torch.randn(batch_size, num_features, dtype=torch.float32)
@@ -158,7 +158,7 @@ if __name__ == '__main__':
     parser.add_argument('--vocab_size', type=int, default=10000, help='Vocabulary size')
     parser.add_argument('--embedding_dim', type=int, default=128, help='Embedding dimension')
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension')
-    parser.add_argument('--num_features', type=int, default=16, help='Number of dense features')
+    parser.add_argument('--num_features', type=int, default=32, help='Number of dense features (extended for user behavior)')
     parser.add_argument('--num_layers', type=int, default=4, help='Number of transformer layers')
     parser.add_argument('--max_seq_len', type=int, default=512, help='Maximum sequence length')
     parser.add_argument('--batch_size', type=int, default=1, help='Batch size for export')
