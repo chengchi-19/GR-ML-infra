@@ -59,16 +59,50 @@ class PreprocessModel:
                 
                 batch_size, seq_len = raw_input_np.shape
                 
-                # Preprocessing logic: extract features from raw input
-                # For demo purposes, we'll create dummy features
-                # In practice, this would involve tokenization, feature extraction, etc.
-                
-                # Create dummy dense features (batch_size, feature_dim)
-                dense_features = np.random.randn(batch_size, self.feature_dim).astype(np.float32)
-                
-                # For ensemble, we need to output feature indices
-                # Convert dense features to indices (simplified)
-                feature_indices = np.arange(batch_size * self.feature_dim, dtype=np.int32)
+                # 使用用户行为序列处理
+                if self.enable_extended_features:
+                    # 解析用户行为序列数据
+                    # 假设输入是JSON格式的用户行为序列
+                    try:
+                        # 这里应该解析实际的用户行为数据
+                        # 为了演示，我们创建模拟的用户行为特征
+                        
+                        # 模拟用户行为特征提取
+                        dense_features = np.zeros((batch_size, self.feature_dim), dtype=np.float32)
+                        
+                        for i in range(batch_size):
+                            # 观看时长特征 (0-9)
+                            dense_features[i, 0:10] = np.random.uniform(0, 1, 10)
+                            
+                            # 观看百分比特征 (10-14)
+                            dense_features[i, 10:15] = np.random.uniform(0, 1, 5)
+                            
+                            # 交互标志特征 (15-19): like, favorite, share, comment, follow
+                            dense_features[i, 15:20] = np.random.choice([0, 1], 5, p=[0.7, 0.3])
+                            
+                            # 时间特征 (20-24): time_of_day, day_of_week
+                            dense_features[i, 20:22] = np.random.uniform(0, 1, 2)
+                            
+                            # 设备特征 (25-29): device_type, network_type
+                            dense_features[i, 25:27] = np.random.uniform(0, 1, 2)
+                            
+                            # 推荐特征 (30-31): source, position
+                            dense_features[i, 30:32] = np.random.uniform(0, 1, 2)
+                        
+                        # 转换为特征索引
+                        feature_indices = np.arange(batch_size * self.feature_dim, dtype=np.int32)
+                        
+                        logging.debug(f"处理了 {batch_size} 个用户行为序列，特征维度: {self.feature_dim}")
+                        
+                    except Exception as e:
+                        logging.warning(f"用户行为序列处理失败，使用默认特征: {e}")
+                        # 回退到默认处理
+                        dense_features = np.random.randn(batch_size, self.feature_dim).astype(np.float32)
+                        feature_indices = np.arange(batch_size * self.feature_dim, dtype=np.int32)
+                else:
+                    # 原始处理逻辑
+                    dense_features = np.random.randn(batch_size, self.feature_dim).astype(np.float32)
+                    feature_indices = np.arange(batch_size * self.feature_dim, dtype=np.int32)
                 
                 # Create output tensor
                 output_tensor_pb = pb_utils.Tensor('out_feats', feature_indices)
