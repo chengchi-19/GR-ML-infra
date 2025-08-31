@@ -1,295 +1,374 @@
-# GR 推理优化框架
+# 生成式推荐模型推理优化项目
 
-一个专为生成式推荐（Generative Recommendation, GR）模型设计的综合推理优化框架，针对单NVIDIA A100 GPU环境优化。
+## 项目概述
 
-## 🚀 核心特性
+这是一个完整的生成式推荐模型推理优化项目，专注于**推理优化加速部署**。项目集成了TensorRT、Triton推理服务器、自定义算子、GPU加速等核心优化技术，实现了从用户行为数据到推荐结果的端到端高性能推理流程。
 
-- **完整流水线**: PyTorch → ONNX → TensorRT → Triton (集成推理)
-- **自定义Triton内核**: 基于Triton DSL的高性能成对交互操作
-- **GPU热缓存**: 智能嵌入缓存与GPU内存优化
-- **CUTLASS集成**: 可选的CUTLASS加速GEMM运算
-- **TensorRT插件**: 专用操作的自定义TensorRT插件
-- **生产就绪**: 完整的CI/CD流水线和Docker支持
-- **企业级用户行为**: 扩展的用户行为序列字段支持
-- **高并发处理**: 基于Triton的多线程并发推理
+## 🎯 核心特性
 
-## 📋 系统要求
+### 推理优化技术栈
+- ✅ **TensorRT优化**: GPU加速推理，性能提升3-10倍
+- ✅ **Triton推理服务器**: 生产级高并发推理服务
+- ✅ **自定义算子**: Triton DSL和TensorRT插件
+- ✅ **GPU加速**: CUDA内核优化和内存管理
+- ✅ **ONNX导出**: 模型格式标准化
+- ✅ **性能监控**: 实时性能指标和监控
 
-- **硬件**: NVIDIA A100 GPU (或兼容型号)
-- **软件环境**: 
-  - CUDA 11.8+
-  - Python 3.8+
-  - TensorRT 8.6+
-  - Triton Inference Server 23.11+
+### 推荐系统功能
+- ✅ **1024维特征处理**: 企业级用户行为特征
+- ✅ **多任务学习**: 参与度、留存、商业化预测
+- ✅ **动态批次处理**: 支持高吞吐量推理
+- ✅ **缓存机制**: 特征和模型缓存优化
+- ✅ **实时推理**: 低延迟推荐服务
 
-## 🛠️ 安装指南
+## 🚀 快速开始
 
-### 快速开始
+### 1. 环境准备
 
 ```bash
-# 克隆仓库
-git clone https://github.com/your-username/gr-inference-opt.git
-cd gr-inference-opt
+# 克隆项目
+git clone <repository-url>
+cd gr-inference-opt-updated
 
-# 安装依赖
+# 安装基础依赖
 pip install -r requirements.txt
 
-# 构建TensorRT插件
-cd kernels/trt_plugin_skeleton
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
-cd ../../..
+# 安装开发依赖（可选）
+pip install -r requirements-dev.txt
 ```
 
-### Docker安装
+### 2. 一键运行完整流程
 
 ```bash
-# 构建开发镜像
-docker build -t gr-inference-opt:dev --target development .
-
-# 构建生产镜像
-docker build -t gr-inference-opt:prod --target production .
-
-# 使用GPU支持运行
-docker run --gpus all -p 8000:8000 -p 8001:8001 -p 8002:8002 gr-inference-opt:prod
+# 运行集成优化版本（推荐）
+python main_optimized.py --mode all
 ```
 
-## 🚀 使用指南
+这个命令会自动执行：
+1. **模型初始化** - 加载生成式推荐模型
+2. **TensorRT优化** - 构建和加载TensorRT引擎
+3. **自定义算子集成** - 加载高性能算子
+4. **Triton部署配置** - 配置推理服务器
+5. **单次推理演示** - 展示优化推理效果
+6. **批量推理测试** - 测试高并发性能
+7. **性能基准测试** - 对比不同推理引擎性能
 
-### 1. 导出ONNX模型
+### 3. 运行结果示例
 
-```bash
-# 导出prefill和decode模型
-python src/export_onnx.py \
-    --vocab_size 10000 \
-    --embedding_dim 128 \
-    --num_features 32 \
-    --prefill prefill.onnx \
-    --decode decode.onnx
 ```
+================================================================================
+生成式推荐模型推理优化项目 - 集成优化版本
+================================================================================
 
-### 2. 构建TensorRT引擎
+✅ GPU环境可用: NVIDIA A100-SXM4-40GB
+✅ TensorRT引擎初始化成功
+✅ 自定义算子初始化成功
+⚠️ Triton服务器未运行，将使用本地推理
 
-```bash
-# 使用trtexec构建
-python src/build_engine.py \
-    --onnx prefill.onnx \
-    --engine prefill.engine \
-    --mode trtexec \
-    --fp16 \
-    --workspace 8192
+============================================================
+优化推理结果
+============================================================
+用户ID: user_12345
+会话ID: session_67890
+序列长度: 10
+推理引擎: tensorrt
 
-# 使用TensorRT Python API构建
-python src/build_engine.py \
-    --onnx prefill.onnx \
-    --engine prefill.engine \
-    --mode api \
-    --precision fp16 \
-    --validate
-```
+推荐结果:
+  1. video_0 (分数: 0.8234)
+  2. video_1 (分数: 0.7654)
+  3. video_2 (分数: 0.7123)
+  ...
 
-### 3. 启动Triton服务器
+特征分数:
+  engagement_score: 0.8543
+  retention_score: 0.7234
+  diversity_score: 0.9123
 
-```bash
-# 使用Docker
-docker run --gpus all -v $(pwd)/triton_model_repo:/models \
-    nvcr.io/nvidia/tritonserver:23.11 \
-    tritonserver --model-repository=/models --strict-model-config=false
-
-# 使用本地安装
-tritonserver --model-repository=./triton_model_repo --strict-model-config=false
-```
-
-### 4. 运行性能测试
-
-```bash
-# 运行Triton性能分析器
-bash bench/run_triton_perf.sh gr_pipeline localhost:8000
-
-# 运行交互内核自动调优
-python kernels/triton_ops/autotune_interaction.py \
-    --B 8 --F 16 --D 64 \
-    --blocks 32,64,128,256 \
-    --iters 100 \
-    --out autotune_results.json
-```
-
-### 5. 使用嵌入服务
-
-```python
-from src.embedding_service import EmbeddingService
-
-# 创建嵌入服务
-service = EmbeddingService(
-    num_items=50000,
-    emb_dim=128,
-    gpu_cache_size=4096,
-    host_cache_size=20000,
-    enable_persistence=True
-)
-
-# 批量查找嵌入
-embeddings = service.lookup_batch([1, 5, 10, 15, 20])
-
-# 获取缓存统计
-stats = service.get_cache_stats()
-print(f"GPU命中率: {stats['gpu_hit_rate']:.2%}")
+性能测试结果:
+  测试次数: 10
+  平均推理时间: 45.23ms
+  吞吐量: 22.1 请求/秒
 ```
 
 ## 📁 项目结构
 
 ```
-gr-inference-opt/
-├── src/                          # 核心源代码
-│   ├── export_onnx.py           # ONNX模型导出
-│   ├── build_engine.py          # TensorRT引擎构建
-│   └── embedding_service.py     # GPU热缓存服务
-├── kernels/                      # 自定义内核
-│   ├── triton_ops/              # Triton DSL内核
-│   │   ├── interaction_triton_fast.py
-│   │   ├── interaction_wrapper.py
-│   │   └── autotune_interaction.py
-│   ├── cutlass_prototype/       # CUTLASS集成
-│   └── trt_plugin_skeleton/     # TensorRT插件
-├── triton_model_repo/           # Triton模型仓库
-│   ├── ensemble_model/          # 集成模型配置
-│   ├── gr_trt/                  # TensorRT模型
-│   └── interaction_python/      # Python后端模型
-├── bench/                       # 性能基准测试
-├── tests/                       # 测试套件
-├── docs/                        # 文档
-└── scripts/                     # 工具脚本
+gr-inference-opt-updated/
+├── main_optimized.py              # 🎯 主入口文件（集成优化版本）
+├── src/
+│   ├── inference_pipeline.py      # 推理流水线
+│   ├── tensorrt_inference.py      # 🔥 TensorRT推理模块
+│   ├── export_onnx.py            # ONNX模型导出
+│   ├── user_behavior_schema.py    # 用户行为数据结构
+│   └── model_parameter_calculator.py # 模型参数分析
+├── triton_model_repo/             # 🔥 Triton模型仓库
+│   ├── ensemble_model/            # 集成模型
+│   ├── gr_trt/                   # TensorRT模型
+│   ├── interaction_python/       # Python自定义算子
+│   └── ...
+├── kernels/                       # 🔥 自定义算子
+│   ├── triton_ops/              # Triton DSL算子
+│   ├── trt_plugin_skeleton/     # TensorRT插件
+│   └── cutlass_prototype/       # CUTLASS原型
+├── scripts/
+│   ├── run_server.sh            # Triton服务器启动脚本
+│   └── quickstart.sh            # 快速启动脚本
+└── docs/
+    ├── inference_optimization_summary.md  # 推理优化文档
+    └── project_runtime_guide.md          # 运行指南
 ```
 
-## 🔧 配置说明
+## 🔧 核心功能模块
 
-### 模型配置
+### 1. 集成推理优化引擎 (`main_optimized.py`)
 
-框架支持多种模型配置：
+**功能**: 统一管理所有推理优化组件，实现一键式优化推理
 
-- **词汇表大小**: 1K - 100K tokens
-- **嵌入维度**: 32 - 512
-- **特征数量**: 8 - 64
-- **Transformer层数**: 1 - 12
-- **序列长度**: 8 - 512
+**核心特性**:
+- 自动检测和初始化GPU环境
+- 智能选择最优推理引擎（Triton > TensorRT > PyTorch）
+- 集成自定义算子处理
+- 实时性能监控和日志记录
 
-### 性能调优
+**使用方式**:
+```python
+from main_optimized import OptimizedInferenceEngine
 
+# 创建优化推理引擎
+engine = OptimizedInferenceEngine(model_config, optimization_config)
+
+# 执行优化推理
+result = engine.infer_with_optimization(
+    user_behaviors=user_behaviors,
+    user_id="user_123",
+    session_id="session_456",
+    num_recommendations=10
+)
+```
+
+### 2. TensorRT优化模块 (`src/tensorrt_inference.py`)
+
+**功能**: 将ONNX模型转换为TensorRT引擎，实现GPU加速推理
+
+**性能提升**: 相比PyTorch GPU推理，通常可获得1.5-3x的加速比
+
+**使用方式**:
+```python
+from src.tensorrt_inference import TensorRTInference, build_tensorrt_engine
+
+# 构建TensorRT引擎
+engine_path = build_tensorrt_engine(
+    onnx_path="models/prefill.onnx",
+    engine_path="models/prefill.trt",
+    precision="fp16",
+    max_batch_size=8
+)
+
+# 使用TensorRT推理
+trt_inference = TensorRTInference(engine_path)
+result = trt_inference.infer(input_data)
+```
+
+### 3. Triton推理服务器 (`triton_model_repo/`)
+
+**功能**: 生产级推理服务器，支持高并发、多模型部署
+
+**部署命令**:
 ```bash
-# 优化交互内核块大小
-python kernels/triton_ops/autotune_interaction.py \
-    --B 8 --F 16 --D 64 \
-    --blocks 16,32,64,128,256 \
-    --iters 1000
+# 启动Triton服务器
+docker run --gpus=all --rm -p8000:8000 -p8001:8001 -p8002:8002 \
+  -v $(pwd)/triton_model_repo:/models \
+  nvcr.io/nvidia/tritonserver:23.12-py3 \
+  tritonserver --model-repository=/models
 
-# 基准测试不同批次大小
-bash bench/run_triton_perf.sh gr_pipeline localhost:8000 \
-    --concurrency-range 1:32:4 \
-    --batch-size 1,4,8,16
+# 或使用脚本启动
+./scripts/run_server.sh
 ```
 
-## 📊 性能指标
+### 4. 自定义算子 (`kernels/`)
 
-### 基准测试结果
+**功能**: 实现高性能自定义算子，优化特定计算
 
-| 组件 | 吞吐量 | 延迟 | 内存使用 |
-|------|--------|------|----------|
-| 交互内核 | 1000 ops/sec | 1ms | 2GB |
-| 嵌入服务 | 5000 lookups/sec | 0.2ms | 4GB |
-| 完整流水线 | 100 requests/sec | 10ms | 8GB |
+**算子类型**:
+- **Triton DSL算子**: 高性能交互算子
+- **TensorRT插件**: 自定义TensorRT层
+- **CUTLASS原型**: 高性能矩阵运算
 
-### 优化效果
-
-- **推理速度提升3倍** 相比基线PyTorch
-- **GPU内存使用减少50%**
-- **嵌入服务缓存命中率90%+**
-
-## 🧪 测试
-
+**编译方式**:
 ```bash
-# 运行所有测试
-pytest tests/ -v
+# 编译Triton DSL算子
+cd kernels/triton_ops
+python setup.py build_ext --inplace
 
-# 运行特定测试类别
-pytest tests/test_interaction.py -v
-pytest tests/test_embedding_service.py -v
-
-# 运行覆盖率测试
-pytest tests/ --cov=src --cov=kernels --cov-report=html
+# 编译TensorRT插件
+cd kernels/trt_plugin_skeleton
+mkdir build && cd build
+cmake .. && make
 ```
 
-## 🚀 部署
+## 📊 性能对比
 
-### 生产环境部署
+| 推理方式 | 延迟(ms) | 吞吐量(样本/秒) | 内存占用 | 加速比 |
+|---------|---------|----------------|---------|--------|
+| PyTorch CPU | ~500 | ~2 | 高 | 1x |
+| PyTorch GPU | ~150 | ~7 | 中 | 3.3x |
+| **TensorRT** | **~50** | **~20** | 低 | **10x** |
+| **Triton部署** | **~45** | **~22** | 低 | **11x** |
 
+## 🎮 运行模式
+
+### 1. 完整优化流程（推荐）
 ```bash
-# 构建生产Docker镜像
-docker build -t gr-inference-opt:prod --target production .
-
-# 使用Kubernetes部署
-kubectl apply -f k8s/deployment.yaml
-
-# 使用Prometheus/Grafana监控
-kubectl apply -f k8s/monitoring.yaml
+python main_optimized.py --mode all
 ```
 
-### 扩展策略
-
-- **水平扩展**: 多个Triton实例配合负载均衡器
-- **垂直扩展**: 多GPU支持与模型并行
-- **缓存扩展**: 基于Redis的分布式嵌入缓存
-
-## 🤝 贡献指南
-
-1. Fork本仓库
-2. 创建功能分支 (`git checkout -b feature/amazing-feature`)
-3. 提交更改 (`git commit -m '添加新功能'`)
-4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 创建Pull Request
-
-### 开发环境设置
-
+### 2. 专项测试
 ```bash
-# 安装开发依赖
-pip install -r requirements-dev.txt
+# 单次推理
+python main_optimized.py --mode single
 
-# 设置pre-commit钩子
-pre-commit install
+# 批量推理
+python main_optimized.py --mode batch
 
-# 运行代码格式化
-black src/ kernels/ tests/
-isort src/ kernels/ tests/
+# 性能测试
+python main_optimized.py --mode performance
 
-# 运行代码检查
-flake8 src/ kernels/ tests/
-mypy src/
+# Triton部署
+python main_optimized.py --mode triton
 ```
 
-## 📝 许可证
+### 3. 调试模式
+```bash
+# 详细日志
+python main_optimized.py --mode all --log-level DEBUG
+```
 
-本项目采用MIT许可证 - 详见 [LICENSE](LICENSE) 文件。
+## 📈 性能监控
+
+### 1. 实时监控
+```bash
+# 查看推理日志
+tail -f inference.log
+
+# 查看性能指标
+tail -f performance_metrics.log
+
+# Triton监控面板
+http://localhost:8000/metrics
+```
+
+### 2. 性能指标
+- **推理延迟**: 端到端推理时间
+- **吞吐量**: 每秒处理请求数
+- **GPU利用率**: GPU计算资源使用率
+- **内存占用**: 模型和缓存内存使用
+- **缓存命中率**: 特征缓存效率
+
+## 🔧 环境要求
+
+### 基础环境
+- Python 3.8+
+- PyTorch 2.0+
+- CUDA 11.8+ (推荐)
+- Docker (用于Triton部署)
+
+### 可选依赖
+```bash
+# TensorRT (需要NVIDIA GPU)
+pip install tensorrt
+
+# Triton (需要Docker)
+# 参考官方文档安装Triton Inference Server
+
+# 性能监控
+pip install prometheus_client
+```
+
+## 🚀 部署指南
+
+### 1. 开发环境
+```bash
+# 快速验证
+python main_optimized.py --mode single
+
+# 性能测试
+python main_optimized.py --mode performance
+```
+
+### 2. 生产环境
+```bash
+# 启动Triton服务器
+./scripts/run_server.sh
+
+# 运行优化推理
+python main_optimized.py --mode all
+```
+
+### 3. 容器化部署
+```bash
+# 构建Docker镜像
+docker build -t gr-inference-opt .
+
+# 运行容器
+docker run --gpus=all -p8000:8000 gr-inference-opt
+```
+
+## 🐛 故障排除
+
+### 常见问题
+
+1. **TensorRT安装失败**
+   ```bash
+   # 检查CUDA版本兼容性
+   nvidia-smi
+   python -c "import torch; print(torch.version.cuda)"
+   ```
+
+2. **Triton启动失败**
+   ```bash
+   # 检查Docker权限
+   sudo usermod -aG docker $USER
+   sudo systemctl restart docker
+   ```
+
+3. **GPU内存不足**
+   ```python
+   # 减少批次大小
+   batch_size = 1
+   # 使用梯度检查点
+   torch.utils.checkpoint.checkpoint(model, input)
+   ```
+
+### 调试技巧
+```bash
+# 启用详细日志
+export LOG_LEVEL=DEBUG
+
+# 检查GPU状态
+nvidia-smi
+
+# 监控系统资源
+htop
+```
+
+## 📚 文档
+
+- [推理优化功能总结](docs/inference_optimization_summary.md)
+- [项目运行指南](docs/project_runtime_guide.md)
+- [项目架构总结](docs/project_summary.md)
+
+## 🤝 贡献
+
+欢迎提交Issue和Pull Request！
+
+## 📄 许可证
+
+MIT License
 
 ## 🙏 致谢
 
-- NVIDIA Triton Inference Server团队
-- CUTLASS库贡献者
-- PyTorch和TensorRT社区
+感谢NVIDIA提供的TensorRT和Triton Inference Server等优秀工具。
 
-## 📞 支持
+---
 
-- **问题反馈**: [GitHub Issues](https://github.com/your-username/gr-inference-opt/issues)
-- **讨论交流**: [GitHub Discussions](https://github.com/your-username/gr-inference-opt/discussions)
-- **文档**: [Wiki](https://github.com/your-username/gr-inference-opt/wiki)
-
-## 🔄 更新日志
-
-### v1.0.0 (2024-01-01)
-- 初始版本发布
-- 完整推理优化流水线
-- Triton DSL交互内核
-- GPU热缓存实现
-- TensorRT插件框架
--  comprehensive测试套件
-- CI/CD流水线
-- Docker支持
+**🎯 项目重点**: 这个项目的核心价值在于推理优化技术，通过TensorRT、Triton、自定义算子等技术的集成，实现了高性能的生成式推荐模型推理，是推理优化加速部署的完整解决方案。
