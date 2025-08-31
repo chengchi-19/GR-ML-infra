@@ -82,6 +82,13 @@ class GenerativeRecommendationModel(nn.Module):
             elif isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, mean=0.0, std=0.02)
     
+    def forward(self, input_ids, dense_features, user_profile=None, 
+                video_features=None, attention_mask=None):
+        """
+        标准forward方法，用于ONNX导出
+        """
+        return self.forward_prefill(input_ids, dense_features, user_profile, video_features, attention_mask)
+    
     def forward_prefill(self, input_ids, dense_features, user_profile=None, 
                        video_features=None, attention_mask=None):
         """
