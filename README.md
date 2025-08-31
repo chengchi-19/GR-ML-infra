@@ -92,30 +92,35 @@ python main_optimized.py --mode all
 
 ## 📁 项目结构
 
+> 📋 **详细项目结构说明请查看 [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)**
+
 ```
 gr-inference-opt-updated/
-├── main_optimized.py              # 🎯 主入口文件（集成优化版本）
-├── src/
+├── main.py                        # 🎯 主入口文件（集成优化版本）
+├── src/                           # 🔥 核心源代码目录
 │   ├── inference_pipeline.py      # 推理流水线
-│   ├── tensorrt_inference.py      # 🔥 TensorRT推理模块
+│   ├── tensorrt_inference.py      # TensorRT推理模块
 │   ├── export_onnx.py            # ONNX模型导出
 │   ├── user_behavior_schema.py    # 用户行为数据结构
-│   └── model_parameter_calculator.py # 模型参数分析
-├── triton_model_repo/             # 🔥 Triton模型仓库
-│   ├── ensemble_model/            # 集成模型
-│   ├── gr_trt/                   # TensorRT模型
-│   ├── interaction_python/       # Python自定义算子
-│   └── ...
-├── kernels/                       # 🔥 自定义算子
+│   ├── embedding_service.py       # 高性能嵌入服务
+│   ├── build_engine.py           # TensorRT引擎构建
+│   └── model_parameter_calculator.py # 模型参数计算
+├── kernels/                       # 🔥 自定义算子目录
 │   ├── triton_ops/              # Triton DSL算子
 │   ├── trt_plugin_skeleton/     # TensorRT插件
 │   └── cutlass_prototype/       # CUTLASS原型
-├── scripts/
-│   ├── run_server.sh            # Triton服务器启动脚本
-│   └── quickstart.sh            # 快速启动脚本
-└── docs/
-    ├── inference_optimization_summary.md  # 推理优化文档
-    └── project_runtime_guide.md          # 运行指南
+├── triton_model_repo/             # 🔥 Triton推理服务器
+│   ├── ensemble_model/          # 集成模型
+│   ├── gr_trt/                  # TensorRT模型
+│   ├── interaction_python/      # Python算子
+│   ├── embedding_service/       # 嵌入服务
+│   └── preprocess_py/           # 预处理
+├── docs/                         # 📚 项目文档
+├── scripts/                      # 🔧 自动化脚本
+├── examples/                     # 📖 使用示例
+├── tests/                        # 🧪 测试代码
+├── bench/                        # ⚡ 性能测试
+└── models/                       # 🤖 模型文件（运行时生成）
 ```
 
 ## 🔧 核心功能模块

@@ -1,0 +1,109 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyTorch
+*.pth
+*.pt
+*.ckpt
+
+# ONNX
+*.onnx
+
+# TensorRT
+*.trt
+*.engine
+
+# Logs
+*.log
+logs/
+performance_metrics.log
+inference.log
+
+# Cache
+.cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Model files (generated at runtime)
+models/*.onnx
+models/*.trt
+models/*.engine
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Build artifacts
+kernels/trt_plugin_skeleton/build/
+kernels/trt_plugin_skeleton/lib/
+kernels/trt_plugin_skeleton/bin/
+
+# Triton server logs
+triton_server.log
+triton_client.log
+
+# Performance test results
+bench/results/
+bench/output/
+
+# Embedding cache
+embedding_cache/
+*.pkl
+
+# Docker
+.dockerignore
+
+# Backup files
+*.bak
+*.backup
