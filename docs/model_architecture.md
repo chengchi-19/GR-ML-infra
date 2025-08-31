@@ -273,7 +273,7 @@ python src/build_engine.py --onnx prefill.onnx --engine prefill.engine --fp16
 本项目使用的模型是一个**自定义的轻量级生成式推荐模型**，基于Transformer架构，具有以下特点：
 
 1. **轻量级**: 仅3.7M参数，适合单A100环境
-2. **高效**: prefill/decode两阶段推理，延迟低
+2. **高效**: prefill/decode两阶段推理，延迟低项目
 3. **灵活**: 支持多种配置，可根据需求调整
 4. **优化**: 针对推理优化，支持ONNX和TensorRT
 5. **实用**: 专门为推荐系统设计，包含特征交互层
