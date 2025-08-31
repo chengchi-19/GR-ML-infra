@@ -42,11 +42,11 @@ class UserBehaviorInferencePipeline:
         if model_config is None:
             model_config = {
                 "vocab_size": 10000,
-                "embedding_dim": 128,
-                "hidden_dim": 256,
-                "num_features": 32,  # 扩展特征维度
-                "num_layers": 4,
-                "max_seq_len": 512
+                "embedding_dim": 512,
+                "hidden_dim": 1024,
+                "num_features": 1024,  # 扩展特征维度
+                "num_layers": 6,
+                "max_seq_len": 2048
             }
         
         # 初始化模型
@@ -219,49 +219,76 @@ class UserBehaviorInferencePipeline:
         # 转换为张量
         batch_size = 1
         
-        # 密集特征 (32维)
-        dense_features = torch.zeros(batch_size, 32, dtype=torch.float32)
+        # 密集特征 (1024维)
+        dense_features = torch.zeros(batch_size, 1024, dtype=torch.float32)
         
-        # 填充密集特征
+        # 填充密集特征 - 扩展到1024维
         if features["sequence_length"] > 0:
-            # 观看时长特征 (0-9)
+            # 基础用户行为特征 (0-99)
+            # 观看时长特征 (0-19)
             watch_durations = features["watch_durations"]
-            for i, duration in enumerate(watch_durations[:10]):
-                dense_features[0, i] = duration / 100.0  # 归一化
+            for i, duration in enumerate(watch_durations[:20]):
+                dense_features[0, i] = duration / 100.0
             
-            # 观看百分比特征 (10-14)
+            # 观看百分比特征 (20-39)
             watch_percentages = features["watch_percentages"]
-            for i, percentage in enumerate(watch_percentages[:5]):
-                dense_features[0, 10 + i] = percentage
+            for i, percentage in enumerate(watch_percentages[:20]):
+                dense_features[0, 20 + i] = percentage
             
-            # 交互标志特征 (15-19)
+            # 交互标志特征 (40-59)
             interaction_flags = features["interaction_flags"]
-            dense_features[0, 15] = sum(interaction_flags["likes"]) / len(interaction_flags["likes"]) if interaction_flags["likes"] else 0
-            dense_features[0, 16] = sum(interaction_flags["favorites"]) / len(interaction_flags["favorites"]) if interaction_flags["favorites"] else 0
-            dense_features[0, 17] = sum(interaction_flags["shares"]) / len(interaction_flags["shares"]) if interaction_flags["shares"] else 0
-            dense_features[0, 18] = sum(interaction_flags["comments"]) / len(interaction_flags["comments"]) if interaction_flags["comments"] else 0
-            dense_features[0, 19] = sum(interaction_flags["follows"]) / len(interaction_flags["follows"]) if interaction_flags["follows"] else 0
+            for i, flag_type in enumerate(["likes", "favorites", "shares", "comments", "follows"]):
+                if interaction_flags[flag_type]:
+                    dense_features[0, 40 + i] = sum(interaction_flags[flag_type]) / len(interaction_flags[flag_type])
             
-            # 时间特征 (20-24)
+            # 时间特征 (60-79)
             time_features = features["time_features"]
             if time_features["time_of_days"]:
-                dense_features[0, 20] = np.mean(time_features["time_of_days"]) / 24.0  # 归一化
+                for i, time_of_day in enumerate(time_features["time_of_days"][:20]):
+                    dense_features[0, 60 + i] = time_of_day / 24.0  # 归一化
             if time_features["day_of_weeks"]:
-                dense_features[0, 21] = np.mean(time_features["day_of_weeks"]) / 7.0  # 归一化
+                for i, day_of_week in enumerate(time_features["day_of_weeks"][:20]):
+                    dense_features[0, 80 + i] = day_of_week / 7.0  # 归一化
             
-            # 设备特征 (25-29)
+            # 设备特征 (100-199)
             device_features = features["device_features"]
             if device_features["device_types"]:
-                dense_features[0, 25] = np.mean(device_features["device_types"]) / 4.0  # 归一化
+                for i, device_type in enumerate(device_features["device_types"][:100]):
+                    dense_features[0, 100 + i] = device_type / 4.0  # 归一化
             if device_features["network_types"]:
-                dense_features[0, 26] = np.mean(device_features["network_types"]) / 4.0  # 归一化
+                for i, network_type in enumerate(device_features["network_types"][:100]):
+                    dense_features[0, 200 + i] = network_type / 4.0  # 归一化
             
-            # 推荐特征 (30-31)
+            # 推荐特征 (300-399)
             recommendation_features = features["recommendation_features"]
             if recommendation_features["sources"]:
-                dense_features[0, 30] = np.mean(recommendation_features["sources"]) / 6.0  # 归一化
+                for i, source in enumerate(recommendation_features["sources"][:100]):
+                    dense_features[0, 300 + i] = source / 6.0  # 归一化
             if recommendation_features["positions"]:
-                dense_features[0, 31] = np.mean(recommendation_features["positions"]) / 10.0  # 归一化
+                for i, position in enumerate(recommendation_features["positions"][:100]):
+                    dense_features[0, 400 + i] = position / 10.0  # 归一化
+            
+            # 统计特征 (500-599)
+            statistical_features = features["statistical_features"]
+            dense_features[0, 500] = statistical_features["avg_watch_duration"] / 100.0
+            dense_features[0, 501] = statistical_features["avg_watch_percentage"]
+            dense_features[0, 502] = statistical_features["like_rate"]
+            dense_features[0, 503] = statistical_features["favorite_rate"]
+            dense_features[0, 504] = statistical_features["share_rate"]
+            
+            # 用户画像特征 (600-799) - 模拟用户画像数据
+            for i in range(200):
+                dense_features[0, 600 + i] = np.random.uniform(0, 1)
+            
+            # 视频特征 (800-999) - 模拟视频特征数据
+            for i in range(200):
+                dense_features[0, 800 + i] = np.random.uniform(0, 1)
+            
+            # 序列特征 (1000-1023) - 序列长度、多样性等
+            dense_features[0, 1000] = features["sequence_length"] / 100.0
+            dense_features[0, 1001] = len(set(features["video_ids"])) / len(features["video_ids"]) if features["video_ids"] else 0
+            dense_features[0, 1002] = np.std(watch_durations) if watch_durations else 0
+            dense_features[0, 1003] = np.std(watch_percentages) if watch_percentages else 0
         
         # 输入ID序列 (使用视频ID的哈希值)
         input_ids = torch.zeros(batch_size, min(len(features["video_ids"]), 50), dtype=torch.long)
@@ -311,9 +338,11 @@ class UserBehaviorInferencePipeline:
             logger.info("执行模型推理")
             with torch.no_grad():
                 # Prefill阶段
-                logits, feature_scores, hidden_states = self.model.forward_prefill(
+                logits, feature_scores, engagement_scores, retention_scores, monetization_scores, hidden_states = self.model.forward_prefill(
                     features["input_ids"],
                     features["dense_features"],
+                    None,  # user_profile - 暂时为None
+                    None,  # video_features - 暂时为None
                     features["attention_mask"]
                 )
                 
@@ -325,10 +354,12 @@ class UserBehaviorInferencePipeline:
                 for i in range(num_recommendations):
                     # Decode阶段
                     last_token = current_input_ids[:, -1:]
-                    logits, scores, new_past_states = self.model.forward_decode(
+                    logits, scores, engagement_scores, retention_scores, monetization_scores, new_past_states = self.model.forward_decode(
                         last_token,
                         current_past_states,
-                        features["dense_features"]
+                        features["dense_features"],
+                        None,  # user_profile - 暂时为None
+                        None   # video_features - 暂时为None
                     )
                     
                     # 选择下一个推荐

@@ -57,29 +57,29 @@ def main():
     
     # 创建不同配置的模型
     configs = {
-        "基础配置": {
+        "企业级配置": {
             "vocab_size": 10000,
-            "embedding_dim": 128,
-            "hidden_dim": 256,
-            "num_features": 32,
-            "num_layers": 4,
-            "max_seq_len": 512
+            "embedding_dim": 512,
+            "hidden_dim": 1024,
+            "num_features": 1024,
+            "num_layers": 6,
+            "max_seq_len": 2048
         },
         "高性能配置": {
             "vocab_size": 20000,
-            "embedding_dim": 256,
-            "hidden_dim": 512,
-            "num_features": 64,
-            "num_layers": 6,
-            "max_seq_len": 1024
+            "embedding_dim": 768,
+            "hidden_dim": 1536,
+            "num_features": 1536,
+            "num_layers": 8,
+            "max_seq_len": 3072
         },
         "轻量级配置": {
             "vocab_size": 5000,
-            "embedding_dim": 64,
-            "hidden_dim": 128,
-            "num_features": 16,
-            "num_layers": 2,
-            "max_seq_len": 256
+            "embedding_dim": 256,
+            "hidden_dim": 512,
+            "num_features": 512,
+            "num_layers": 4,
+            "max_seq_len": 1024
         }
     }
     
@@ -120,10 +120,10 @@ def main():
     
     # 计算理论参数量
     vocab_size = 10000
-    embedding_dim = 128
-    hidden_dim = 256
-    num_features = 32
-    num_layers = 4
+    embedding_dim = 512
+    hidden_dim = 1024
+    num_features = 1024
+    num_layers = 6
     
     # 理论计算
     token_embedding_params = vocab_size * embedding_dim
@@ -164,25 +164,44 @@ def main():
     print(f"  attention_mask: [batch_size, seq_len] - 注意力掩码")
     print(f"  past_key_value_states: [batch_size, past_len, {embedding_dim}] - KV缓存")
     
-    # 计算输入数据大小
-    batch_size = 1
-    seq_len = 50
-    past_len = 10
+    # 计算输入数据大小 - 扩展版本
+    batch_size = 4  # 增加批次大小
+    seq_len = 2000  # 增加序列长度
+    past_len = 1000  # 增加KV缓存长度
+    user_profile_dim = 256
+    video_features_dim = 512
     
     dense_features_size = batch_size * num_features * 4  # FP32
     input_ids_size = batch_size * seq_len * 4  # INT32
     attention_mask_size = batch_size * seq_len * 4  # INT32
     past_kv_size = batch_size * past_len * embedding_dim * 4  # FP32
+    user_profile_size = batch_size * user_profile_dim * 4  # FP32
+    video_features_size = batch_size * video_features_dim * 4  # FP32
     
-    total_input_size = dense_features_size + input_ids_size + attention_mask_size + past_kv_size
+    total_input_size = dense_features_size + input_ids_size + attention_mask_size + past_kv_size + user_profile_size + video_features_size
     total_input_mb = total_input_size / (1024 * 1024)
     
-    print(f"\n输入数据大小 (batch_size=1, seq_len=50, past_len=10):")
-    print(f"  dense_features: {dense_features_size:,} bytes ({dense_features_size/1024:.1f}KB)")
-    print(f"  input_ids: {input_ids_size:,} bytes ({input_ids_size/1024:.1f}KB)")
-    print(f"  attention_mask: {attention_mask_size:,} bytes ({attention_mask_size/1024:.1f}KB)")
-    print(f"  past_key_value_states: {past_kv_size:,} bytes ({past_kv_size/1024:.1f}KB)")
+    print(f"\n输入数据大小 (batch_size=4, seq_len=2000, past_len=1000):")
+    print(f"  dense_features: {dense_features_size:,} bytes ({dense_features_size/1024/1024:.1f}MB)")
+    print(f"  input_ids: {input_ids_size:,} bytes ({input_ids_size/1024/1024:.1f}MB)")
+    print(f"  attention_mask: {attention_mask_size:,} bytes ({attention_mask_size/1024/1024:.1f}MB)")
+    print(f"  past_key_value_states: {past_kv_size:,} bytes ({past_kv_size/1024/1024:.1f}MB)")
+    print(f"  user_profile: {user_profile_size:,} bytes ({user_profile_size/1024/1024:.1f}MB)")
+    print(f"  video_features: {video_features_size:,} bytes ({video_features_size/1024/1024:.1f}MB)")
     print(f"  总输入大小: {total_input_size:,} bytes ({total_input_mb:.1f}MB)")
+    
+    # 计算不同批次大小的输入大小
+    print(f"\n不同批次大小的输入数据大小:")
+    for bs in [1, 4, 8, 16, 32]:
+        bs_dense_features_size = bs * num_features * 4
+        bs_input_ids_size = bs * seq_len * 4
+        bs_attention_mask_size = bs * seq_len * 4
+        bs_past_kv_size = bs * past_len * embedding_dim * 4
+        bs_user_profile_size = bs * user_profile_dim * 4
+        bs_video_features_size = bs * video_features_dim * 4
+        bs_total_size = bs_dense_features_size + bs_input_ids_size + bs_attention_mask_size + bs_past_kv_size + bs_user_profile_size + bs_video_features_size
+        bs_total_mb = bs_total_size / (1024 * 1024)
+        print(f"  batch_size={bs}: {bs_total_size:,} bytes ({bs_total_mb:.1f}MB)")
 
 if __name__ == "__main__":
     main()
