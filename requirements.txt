@@ -7,6 +7,16 @@ torch>=2.0.0
 torchvision>=0.15.0
 torchaudio>=2.0.0
 
+# VLLM inference framework
+vllm>=0.2.0
+
+# Hugging Face Transformers (for open source MTGR)
+transformers>=4.30.0
+tokenizers>=0.13.0
+
+# TensorRT support
+tensorrt>=8.0.0
+
 # Triton dependencies
 triton>=2.0.0
 tritonclient[all]>=2.32.0

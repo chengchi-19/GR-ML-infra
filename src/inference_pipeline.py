@@ -14,7 +14,8 @@ import logging
 from src.user_behavior_schema import (
     VideoMetadata, UserBehavior, UserBehaviorSequence, UserBehaviorProcessor
 )
-from src.export_onnx import GenerativeRecommendationModel
+from src.mtgr_model import create_mtgr_model, MTGRWrapper
+from src.vllm_engine import create_vllm_engine, VLLMInferenceEngine
 from src.embedding_service import EmbeddingService
 
 # 配置日志
@@ -38,20 +39,36 @@ class UserBehaviorInferencePipeline:
         """
         self.max_sequence_length = max_sequence_length
         
-        # 默认模型配置
+        # 默认模型配置 - MTGR-large (约8B参数)
         if model_config is None:
             model_config = {
-                "vocab_size": 10000,
-                "embedding_dim": 512,
-                "hidden_dim": 1024,
-                "num_features": 1024,  # 扩展特征维度
-                "num_layers": 6,
-                "max_seq_len": 2048
+                "vocab_size": 50000,
+                "d_model": 1024,
+                "nhead": 16,
+                "num_layers": 24,
+                "d_ff": 4096,
+                "max_seq_len": 2048,
+                "num_features": 1024,
+                "user_profile_dim": 256,
+                "item_feature_dim": 512,
+                "dropout": 0.1
             }
         
-        # 初始化模型
-        self.model = GenerativeRecommendationModel(**model_config)
+        # 初始化MTGR模型
+        self.model = create_mtgr_model(model_config)
         self.model.eval()
+        
+        # 初始化VLLM推理引擎
+        self.vllm_engine = create_vllm_engine(
+            model_path="mtgr_model",
+            tensor_parallel_size=1,
+            gpu_memory_utilization=0.9,
+            max_model_len=2048
+        )
+        
+        # 记录模型信息
+        total_params = sum(p.numel() for p in self.model.parameters())
+        logger.info(f"MTGR模型初始化完成，总参数量: {total_params:,} (约{total_params/1e9:.1f}B)")
         
         # 初始化用户行为处理器
         self.behavior_processor = UserBehaviorProcessor(max_sequence_length=max_sequence_length)
@@ -60,7 +77,7 @@ class UserBehaviorInferencePipeline:
         try:
             self.embedding_service = EmbeddingService(
                 num_items=model_config["vocab_size"],
-                emb_dim=model_config["embedding_dim"],
+                emb_dim=model_config["d_model"],  # 使用d_model而不是embedding_dim
                 gpu_cache_size=embedding_cache_size // 2,
                 host_cache_size=embedding_cache_size // 2
             )
@@ -311,15 +328,18 @@ class UserBehaviorInferencePipeline:
                             user_id: str,
                             session_id: str,
                             behaviors: List[Dict[str, Any]],
-                            num_recommendations: int = 10) -> Dict[str, Any]:
+                            num_recommendations: int = 10,
+                            use_vllm: bool = True) -> Dict[str, Any]:
         """
         基于用户行为序列进行推荐推理
+        支持MTGR模型和VLLM推理优化
         
         Args:
             user_id: 用户ID
             session_id: 会话ID
             behaviors: 用户行为列表
             num_recommendations: 推荐数量
+            use_vllm: 是否使用VLLM推理优化
             
         Returns:
             推荐结果字典
@@ -334,68 +354,15 @@ class UserBehaviorInferencePipeline:
             logger.info("提取行为特征")
             features = self.extract_features_from_sequence(sequence)
             
-            # 3. 模型推理
-            logger.info("执行模型推理")
-            with torch.no_grad():
-                # Prefill阶段
-                logits, feature_scores, engagement_scores, retention_scores, monetization_scores, hidden_states = self.model.forward_prefill(
-                    features["input_ids"],
-                    features["dense_features"],
-                    None,  # user_profile - 暂时为None
-                    None,  # video_features - 暂时为None
-                    features["attention_mask"]
-                )
-                
-                # 生成推荐
-                recommendations = []
-                current_input_ids = features["input_ids"]
-                current_past_states = hidden_states
-                
-                for i in range(num_recommendations):
-                    # Decode阶段
-                    last_token = current_input_ids[:, -1:]
-                    logits, scores, engagement_scores, retention_scores, monetization_scores, new_past_states = self.model.forward_decode(
-                        last_token,
-                        current_past_states,
-                        features["dense_features"],
-                        None,  # user_profile - 暂时为None
-                        None   # video_features - 暂时为None
-                    )
-                    
-                    # 选择下一个推荐
-                    next_token = logits.argmax(dim=-1)
-                    recommendation_score = scores.item()
-                    
-                    # 转换为视频ID
-                    video_id = f"video_{next_token.item()}"
-                    
-                    recommendations.append({
-                        "video_id": video_id,
-                        "score": float(recommendation_score),
-                        "position": i + 1
-                    })
-                    
-                    # 更新状态
-                    current_input_ids = torch.cat([current_input_ids, next_token], dim=1)
-                    current_past_states = new_past_states
-            
-            # 4. 构建结果
-            result = {
-                "user_id": user_id,
-                "session_id": session_id,
-                "timestamp": datetime.now().isoformat(),
-                "sequence_length": len(sequence.behaviors),
-                "recommendations": recommendations,
-                "feature_scores": {
-                    "engagement_score": float(features["raw_features"]["statistical_features"]["like_rate"]),
-                    "retention_score": float(features["raw_features"]["statistical_features"]["avg_watch_percentage"]),
-                    "diversity_score": len(set(features["raw_features"]["video_ids"])) / len(features["raw_features"]["video_ids"]) if features["raw_features"]["video_ids"] else 0
-                },
-                "processing_time_ms": 0  # 可以添加实际的时间计算
-            }
-            
-            logger.info(f"推荐完成，生成了 {len(recommendations)} 个推荐")
-            return result
+            # 3. 选择推理方式
+            if use_vllm and hasattr(self, 'vllm_engine'):
+                logger.info("使用VLLM推理优化引擎")
+                # 对于同步调用，使用MTGR推理
+                logger.info("同步调用模式，使用MTGR推理")
+                return self._infer_with_mtgr(features, sequence, num_recommendations)
+            else:
+                logger.info("使用MTGR模型推理")
+                return self._infer_with_mtgr(features, sequence, num_recommendations)
             
         except Exception as e:
             logger.error(f"推理过程中发生错误: {e}")
@@ -405,6 +372,149 @@ class UserBehaviorInferencePipeline:
                 "session_id": session_id,
                 "timestamp": datetime.now().isoformat()
             }
+    
+    async def infer_recommendations_async(self, 
+                                        user_id: str,
+                                        session_id: str,
+                                        behaviors: List[Dict[str, Any]],
+                                        num_recommendations: int = 10,
+                                        use_vllm: bool = True) -> Dict[str, Any]:
+        """
+        异步推荐推理接口
+        支持VLLM推理优化
+        """
+        try:
+            # 1. 处理用户行为序列
+            logger.info(f"处理用户 {user_id} 的行为序列，共 {len(behaviors)} 个行为")
+            sequence = self.process_user_behavior_sequence(user_id, session_id, behaviors)
+            
+            # 2. 提取特征
+            logger.info("提取行为特征")
+            features = self.extract_features_from_sequence(sequence)
+            
+            # 3. 选择推理方式
+            if use_vllm and hasattr(self, 'vllm_engine'):
+                logger.info("使用VLLM推理优化引擎")
+                return await self._infer_with_vllm(user_id, session_id, behaviors, num_recommendations)
+            else:
+                logger.info("使用MTGR模型推理")
+                return self._infer_with_mtgr(features, sequence, num_recommendations)
+            
+        except Exception as e:
+            logger.error(f"推理过程中发生错误: {e}")
+            return {
+                "error": str(e),
+                "user_id": user_id,
+                "session_id": session_id,
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    async def _infer_with_vllm(self, 
+                              user_id: str,
+                              session_id: str,
+                              behaviors: List[Dict[str, Any]],
+                              num_recommendations: int) -> Dict[str, Any]:
+        """使用VLLM推理优化"""
+        try:
+            start_time = time.time()
+            
+            # 调用VLLM引擎
+            result = await self.vllm_engine.generate_recommendations(
+                user_id=user_id,
+                session_id=session_id,
+                user_behaviors=behaviors,
+                num_recommendations=num_recommendations
+            )
+            
+            # 添加额外信息
+            result.update({
+                "timestamp": datetime.now().isoformat(),
+                "sequence_length": len(behaviors),
+                "engine_type": "vllm_optimized",
+                "processing_time_ms": result.get("latency_ms", 0)
+            })
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"VLLM推理失败: {e}")
+            # 回退到MTGR推理
+            return self._infer_with_mtgr(
+                self.extract_features_from_sequence(
+                    self.process_user_behavior_sequence(user_id, session_id, behaviors)
+                ),
+                self.process_user_behavior_sequence(user_id, session_id, behaviors),
+                num_recommendations
+            )
+    
+    def _infer_with_mtgr(self, 
+                         features: Dict[str, torch.Tensor],
+                         sequence: UserBehaviorSequence,
+                         num_recommendations: int) -> Dict[str, Any]:
+        """使用MTGR模型推理"""
+        logger.info("执行MTGR模型推理")
+        
+        with torch.no_grad():
+            # Prefill阶段
+            logits, feature_scores, engagement_scores, retention_scores, monetization_scores, hidden_states = self.model.forward_prefill(
+                features["input_ids"],
+                features["dense_features"],
+                None,  # user_profile - 暂时为None
+                None,  # item_features - 暂时为None
+                features["attention_mask"]
+            )
+            
+            # 生成推荐
+            recommendations = []
+            current_input_ids = features["input_ids"]
+            current_past_states = hidden_states
+            
+            for i in range(num_recommendations):
+                # Decode阶段
+                last_token = current_input_ids[:, -1:]
+                logits, scores, engagement_scores, retention_scores, monetization_scores, new_past_states = self.model.forward_decode(
+                    last_token,
+                    current_past_states,
+                    features["dense_features"],
+                    None,  # user_profile - 暂时为None
+                    None   # item_features - 暂时为None
+                )
+                
+                # 选择下一个推荐
+                next_token = logits.argmax(dim=-1)
+                recommendation_score = scores.item()
+                
+                # 转换为视频ID
+                video_id = f"video_{next_token.item()}"
+                
+                recommendations.append({
+                    "video_id": video_id,
+                    "score": float(recommendation_score),
+                    "position": i + 1
+                })
+                
+                # 更新状态
+                current_input_ids = torch.cat([current_input_ids, next_token], dim=1)
+                current_past_states = new_past_states
+        
+        # 构建结果
+        result = {
+            "user_id": sequence.user_id,
+            "session_id": sequence.session_id,
+            "timestamp": datetime.now().isoformat(),
+            "sequence_length": len(sequence.behaviors),
+            "recommendations": recommendations,
+            "feature_scores": {
+                "engagement_score": float(features["raw_features"]["statistical_features"]["like_rate"]),
+                "retention_score": float(features["raw_features"]["statistical_features"]["avg_watch_percentage"]),
+                "diversity_score": len(set(features["raw_features"]["video_ids"])) / len(features["raw_features"]["video_ids"]) if features["raw_features"]["video_ids"] else 0
+            },
+            "processing_time_ms": 0,
+            "engine_type": "mtgr_model"
+        }
+        
+        logger.info(f"MTGR推荐完成，生成了 {len(recommendations)} 个推荐")
+        return result
     
     def batch_infer(self, 
                    user_requests: List[Dict[str, Any]],

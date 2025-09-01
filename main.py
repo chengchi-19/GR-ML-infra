@@ -17,6 +17,8 @@ from typing import List, Dict, Any
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from src.inference_pipeline import UserBehaviorInferencePipeline
+from src.mtgr_model import create_mtgr_model
+from src.vllm_engine import create_vllm_engine
 from src.user_behavior_schema import UserBehaviorProcessor
 from src.model_parameter_calculator import calculate_model_parameters
 from src.export_onnx import GenerativeRecommendationModel
@@ -427,19 +429,25 @@ def setup_optimized_engine():
     """设置优化推理引擎"""
     logger.info("正在设置优化推理引擎...")
     
+    # MTGR模型配置 - 约8B参数
     model_config = {
-        "vocab_size": 10000,
-        "embedding_dim": 512,
-        "hidden_dim": 1024,
+        "vocab_size": 50000,
+        "d_model": 1024,
+        "nhead": 16,
+        "num_layers": 24,
+        "d_ff": 4096,
+        "max_seq_len": 2048,
         "num_features": 1024,
-        "num_layers": 6,
-        "max_seq_len": 2048
+        "user_profile_dim": 256,
+        "item_feature_dim": 512,
+        "dropout": 0.1
     }
     
     optimization_config = {
         "enable_tensorrt": True,
         "enable_triton": True,
         "enable_custom_ops": True,
+        "enable_vllm": True,  # 启用VLLM推理优化
         "precision": "fp16",
         "max_batch_size": 8
     }
