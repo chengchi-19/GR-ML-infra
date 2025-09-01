@@ -269,6 +269,16 @@ class MTGRModel(nn.Module):
         # 5. 通过HSTU层
         hidden_states = combined_emb
         for hstu_layer in self.hstu_layers:
+            # 调整注意力掩码尺寸以匹配序列长度
+            if attention_mask is not None:
+                # 扩展掩码以包含特征维度
+                seq_len = hidden_states.size(1)
+                if attention_mask.size(1) != seq_len:
+                    # 创建新的掩码，包含特征维度
+                    new_mask = torch.ones(attention_mask.size(0), seq_len, dtype=attention_mask.dtype, device=attention_mask.device)
+                    # 保持原始序列的掩码，特征维度设为True
+                    new_mask[:, :attention_mask.size(1)] = attention_mask
+                    attention_mask = new_mask
             hidden_states = hstu_layer(hidden_states, attention_mask)
         
         # 6. 输出处理
