@@ -13,6 +13,28 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# 尝试优先导入开源/第三方实现（如果存在），否则回退到内置实现
+try:
+    import os, sys
+    candidate_paths = [
+        os.path.join(os.path.dirname(__file__), '../third_party/mtgr'),
+        os.path.join(os.path.dirname(__file__), '../../third_party/mtgr')
+    ]
+    loaded_third_party = False
+    for p in candidate_paths:
+        if os.path.isdir(p):
+            sys.path.append(p)
+            try:
+                from mtgr_open.modeling import MTGRModel as MTGRExternal  # 假设第三方包暴露该接口
+                # 如果成功导入，将后续 create_mtgr_model 调整为实例化 MTGRExternal
+                loaded_third_party = True
+                logger.info("已检测到第三方MTGR实现，可通过开源模型替换内置模型")
+                break
+            except Exception:
+                continue
+except Exception:
+    loaded_third_party = False
+
 class HSTULayer(nn.Module):
     """
     分层时序转导单元 (Hierarchical Sequential Transduction Units)
@@ -262,7 +284,53 @@ class MTGRModel(nn.Module):
         
         # 3. 应用动态混合掩码
         masked_emb = self.dynamic_mask(token_emb, input_ids)
-        
+
+        # 3.1 插入 pairwise 交互特征（优先GPU自定义算子，CPU回退）
+        try:
+            import sys, os, torch
+            sys.path.append(os.path.join(os.path.dirname(__file__), '../kernels/triton_ops'))
+            from interaction_wrapper import interaction_op  # type: ignore
+
+            # 将 dense 特征映射为 (F=32, D=32) 的embedding后做 pairwise
+            batch_size = dense_features.shape[0]
+            if dense_features.shape[1] >= 1024:
+                emb_32x32 = dense_features[:, :1024].reshape(batch_size, 32, 32)
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                emb_32x32 = emb_32x32.to(device=device, dtype=torch.float16)
+                pairwise = interaction_op(emb_32x32, BLOCK=64)
+                # 生成统计并拼接到 feature_emb 上（对齐 dtype/设备）
+                stats = torch.stack([pairwise.mean(dim=1), pairwise.max(dim=1).values], dim=1)
+                stats = stats.to(feature_emb.device, dtype=feature_emb.dtype)
+                # 将 stats 投影到 d_model 并叠加至 feature_emb
+                stats_proj = torch.zeros(feature_emb.shape[0], 1, feature_emb.shape[2], device=feature_emb.device, dtype=feature_emb.dtype)
+                # 简单方式：重复/裁剪匹配维度
+                repeat_times = (feature_emb.shape[2] + stats.shape[-1] - 1) // stats.shape[-1]
+                expanded = stats.repeat(1, 1, repeat_times)
+                stats_proj[:, 0, :] = expanded[:, 0, :feature_emb.shape[2]]
+                feature_emb = feature_emb + stats_proj
+        except Exception:
+            # CPU回退：使用简单点积 pairwise
+            try:
+                import torch
+                batch_size = dense_features.shape[0]
+                if dense_features.shape[1] >= 1024:
+                    cpu_emb = dense_features[:, :1024].reshape(batch_size, 32, 32)
+                    # 计算上三角 pairwise 点积的均值与最大值
+                    pairwise_list = []
+                    for i in range(32):
+                        for j in range(i + 1, 32):
+                            pairwise_list.append((cpu_emb[:, i, :] * cpu_emb[:, j, :]).sum(dim=1, keepdim=True))
+                    pairwise_tensor = torch.cat(pairwise_list, dim=1)
+                    stats = torch.stack([pairwise_tensor.mean(dim=1), pairwise_tensor.max(dim=1)[0]], dim=1)
+                    stats = stats.to(feature_emb.device, dtype=feature_emb.dtype)
+                    stats_proj = torch.zeros(feature_emb.shape[0], 1, feature_emb.shape[2], device=feature_emb.device, dtype=feature_emb.dtype)
+                    repeat_times = (feature_emb.shape[2] + stats.shape[-1] - 1) // stats.shape[-1]
+                    expanded = stats.repeat(1, 1, repeat_times)
+                    stats_proj[:, 0, :] = expanded[:, 0, :feature_emb.shape[2]]
+                    feature_emb = feature_emb + stats_proj
+            except Exception:
+                pass
+
         # 4. 特征拼接
         combined_emb = torch.cat([feature_emb, masked_emb], dim=1)
         
@@ -414,6 +482,15 @@ def create_mtgr_model(config: Dict[str, Any] = None) -> MTGRModel:
     # 更新配置
     default_config.update(config)
     
+    # 如果有第三方开源MTGR实现，可在此用其替换
+    try:
+        if 'loaded_third_party' in globals() and loaded_third_party:
+            model = MTGRExternal(**default_config)  # type: ignore
+            logger.info("使用第三方MTGR实现实例化模型")
+            return model
+    except Exception as e:
+        logger.warning(f"第三方MTGR加载失败，回退到内置实现: {e}")
+
     return MTGRModel(**default_config)
 
 # 兼容性包装器

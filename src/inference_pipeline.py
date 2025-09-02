@@ -9,6 +9,7 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json
+import time
 import logging
 
 from src.user_behavior_schema import (

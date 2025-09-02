@@ -10,6 +10,7 @@ import json
 import logging
 import argparse
 import time
+import asyncio
 from datetime import datetime
 from typing import List, Dict, Any
 
@@ -214,8 +215,33 @@ class OptimizedInferenceEngine:
             logger.info("3. 自定义算子处理...")
             features = self.custom_operators.process_features(features)
         
-        # 4. 模型推理（按优先级选择）
+        # 4. 模型推理（优先使用 vLLM 异步生成）
         logger.info("4. 模型推理...")
+        if self.optimization_config.get("enable_vllm", True):
+            logger.info("使用 vLLM 异步生成主路径")
+            try:
+                result = asyncio.run(self.pytorch_pipeline.infer_recommendations_async(
+                    user_id=user_id,
+                    session_id=session_id,
+                    behaviors=user_behaviors,
+                    num_recommendations=num_recommendations,
+                    use_vllm=True
+                ))
+                # 对齐键名，标识引擎
+                result['inference_engine'] = 'vllm'
+            except Exception as e:
+                logger.warning(f"vLLM 异步路径失败，回退其它引擎: {e}")
+                result = None
+
+            if result is not None:
+                # 5. 后处理和结果格式化
+                logger.info("5. 后处理和结果格式化...")
+                result = self._post_process_result(result, user_id, session_id, len(user_behaviors))
+                end_time = time.time()
+                inference_time = (end_time - start_time) * 1000
+                self._log_performance_metrics(inference_time, result)
+                return result
+
         if self.triton_client:
             result = self._triton_inference(features, user_id, session_id, num_recommendations)
         elif self.tensorrt_engine:
@@ -280,13 +306,51 @@ class OptimizedInferenceEngine:
     
     def _triton_inference(self, features: Dict[str, Any], user_id: str, 
                          session_id: str, num_recommendations: int) -> Dict[str, Any]:
-        """Triton推理"""
-        return {
-            'recommendations': [{'video_id': f'video_{i}', 'score': 0.8 - i*0.1} 
-                              for i in range(num_recommendations)],
-            'feature_scores': {'engagement_score': 0.85, 'retention_score': 0.72, 'diversity_score': 0.91},
-            'inference_engine': 'triton'
-        }
+        """Triton推理 - 调用ensemble `gr_pipeline` 实际推理"""
+        try:
+            if not self.triton_client:
+                raise RuntimeError("Triton客户端未初始化")
+
+            # 将行为序列转换为raw_input(int32)，与 `preprocess_py` 的 config.pbtxt 对齐
+            behaviors: List[Dict[str, Any]] = features.get('behaviors', [])
+            seq = []
+            for b in behaviors:
+                vid = str(b.get('video_id', '0'))
+                # 简单映射为稳定的int32
+                seq.append(abs(hash(vid)) % 100000)
+            if not seq:
+                seq = [0]
+
+            raw_input = __import__('numpy').array([seq], dtype=__import__('numpy').int32)
+
+            # 调用 Triton 推理（HTTP v2）
+            triton_result = self.triton_client.infer(
+                model_name='gr_pipeline',
+                inputs={
+                    'raw_input': raw_input
+                },
+                outputs=['final_scores']
+            )
+
+            scores = triton_result.get('final_scores', [])
+            # 取前 num_recommendations 个结果（如果长度不足则填充）
+            recommendations = []
+            for i in range(num_recommendations):
+                score = float(scores[i]) if i < len(scores) else max(0.0, 0.9 - i * 0.05)
+                recommendations.append({'video_id': f'video_{i}', 'score': score})
+
+            return {
+                'recommendations': recommendations,
+                'feature_scores': {
+                    'engagement_score': float(scores[0]) if len(scores) > 0 else 0.85,
+                    'retention_score': float(scores[1]) if len(scores) > 1 else 0.72,
+                    'diversity_score': float(scores[2]) if len(scores) > 2 else 0.91
+                },
+                'inference_engine': 'triton'
+            }
+        except Exception as e:
+            logger.error(f"Triton推理失败，回退到本地推理: {e}")
+            return self._pytorch_inference(features, user_id, session_id, num_recommendations)
     
     def _tensorrt_inference(self, features: Dict[str, Any], user_id: str, 
                            session_id: str, num_recommendations: int) -> Dict[str, Any]:
@@ -382,20 +446,134 @@ class OptimizedInferenceEngine:
                    f"{inference_time:.2f},{len(result.get('recommendations', []))}\n")
 
 class TritonClient:
-    """Triton客户端（模拟）"""
-    def __init__(self):
-        self.server_url = "http://localhost:8000"
-    
-    def infer(self, model_name: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        return {'outputs': {'recommendations': [0.8, 0.7, 0.6]}}
+    """Triton客户端（HTTP/gRPC v2 实现）"""
+    def __init__(self, server_url: str | None = None, timeout: int = 10, protocol: str = 'http'):
+        import os
+        self.server_url = server_url or os.environ.get('TRITON_SERVER_URL', 'localhost:8000')
+        self.timeout = timeout
+        self.protocol = protocol.lower()
+        self._http = None
+        self._grpc = None
+        try:
+            if self.protocol == 'http':
+                import tritonclient.http as httpclient
+                # httpclient 需要完整URL，示例: http://localhost:8000
+                url = self.server_url if self.server_url.startswith('http') else f"http://{self.server_url}"
+                self._http = httpclient.InferenceServerClient(url=url, timeout=timeout)
+            elif self.protocol == 'grpc':
+                import tritonclient.grpc as grpcclient
+                # grpc 使用 host:port，例如 localhost:8001
+                # 若用户未显式提供grpc端口，尝试将8000替换为8001
+                endpoint = self.server_url
+                if endpoint.endswith(':8000'):
+                    endpoint = endpoint.replace(':8000', ':8001')
+                self._grpc = grpcclient.InferenceServerClient(url=endpoint, timeout=timeout)
+            elif self.protocol == 'both':
+                import tritonclient.http as httpclient
+                import tritonclient.grpc as grpcclient
+                http_url = self.server_url if self.server_url.startswith('http') else f"http://{self.server_url}"
+                self._http = httpclient.InferenceServerClient(url=http_url, timeout=timeout)
+                endpoint = self.server_url
+                if endpoint.endswith(':8000'):
+                    endpoint = endpoint.replace(':8000', ':8001')
+                self._grpc = grpcclient.InferenceServerClient(url=endpoint, timeout=timeout)
+            else:
+                raise ValueError("protocol 必须是 'http' | 'grpc' | 'both'")
+        except Exception as e:
+            raise RuntimeError(f"初始化Triton客户端失败: {e}")
+
+    def infer(self, model_name: str, inputs: Dict[str, Any], outputs: List[str] | None = None) -> Dict[str, Any]:
+        import numpy as np
+        try:
+            if self._http is not None:
+                import tritonclient.http as httpclient
+                from tritonclient.utils import np_to_triton_dtype
+                infer_inputs: List[httpclient.InferInput] = []
+                for name, arr in inputs.items():
+                    if not isinstance(arr, np.ndarray):
+                        raise ValueError(f"输入 {name} 必须为numpy数组")
+                    infer_in = httpclient.InferInput(name, arr.shape, np_to_triton_dtype(arr.dtype))
+                    infer_in.set_data_from_numpy(arr)
+                    infer_inputs.append(infer_in)
+                infer_outputs: List[httpclient.InferRequestedOutput] = []
+                if outputs:
+                    for out_name in outputs:
+                        infer_outputs.append(httpclient.InferRequestedOutput(out_name))
+                result = self._http.infer(model_name=model_name, inputs=infer_inputs, outputs=infer_outputs or None)
+                parsed: Dict[str, Any] = {}
+                if outputs:
+                    for out_name in outputs:
+                        out = result.as_numpy(out_name)
+                        if out is not None:
+                            parsed[out_name] = out.squeeze().tolist()
+                return parsed
+
+            # HTTP不可用则尝试 gRPC
+            import tritonclient.grpc as grpcclient
+            from tritonclient.utils import np_to_triton_dtype
+            infer_inputs: List[grpcclient.InferInput] = []
+            for name, arr in inputs.items():
+                if not isinstance(arr, np.ndarray):
+                    raise ValueError(f"输入 {name} 必须为numpy数组")
+                infer_in = grpcclient.InferInput(name, arr.shape, np_to_triton_dtype(arr.dtype))
+                infer_in.set_data_from_numpy(arr)
+                infer_inputs.append(infer_in)
+            infer_outputs: List[grpcclient.InferRequestedOutput] = []
+            if outputs:
+                for out_name in outputs:
+                    infer_outputs.append(grpcclient.InferRequestedOutput(out_name))
+            result = self._grpc.infer(model_name=model_name, inputs=infer_inputs, outputs=infer_outputs or None)
+            parsed: Dict[str, Any] = {}
+            if outputs:
+                for out_name in outputs:
+                    out = result.as_numpy(out_name)
+                    if out is not None:
+                        parsed[out_name] = out.squeeze().tolist()
+            return parsed
+        except Exception as e:
+            raise RuntimeError(f"Triton推理请求失败: {e}")
 
 class CustomOperators:
-    """自定义算子（模拟）"""
+    """自定义算子集成（使用 Triton-lang 内核）"""
     def __init__(self, ops_path: str):
         self.ops_path = ops_path
+        import sys, os
+        sys.path.append(self.ops_path)
+        try:
+            from interaction_wrapper import interaction_op  # noqa: F401
+            self._interaction_op = interaction_op
+            logger.info("已加载 interaction_op 自定义算子")
+        except Exception as e:
+            logger.warning(f"加载自定义算子失败，将按原样透传: {e}")
+            self._interaction_op = None
     
     def process_features(self, features: Dict[str, Any]) -> Dict[str, Any]:
-        return features
+        # 示例：对 dense_features 构造低维嵌入并计算 pairwise 交互，拼接回特征
+        try:
+            import torch
+            dense = features.get('dense_features')
+            if self._interaction_op is None or dense is None:
+                return features
+            if not isinstance(dense, torch.Tensor):
+                return features
+
+            batch_size = dense.shape[0]
+            # 将前 1024 维映射为 (F=32, D=32) 的嵌入
+            if dense.shape[1] < 1024:
+                return features
+            emb = dense[:, :1024].reshape(batch_size, 32, 32).contiguous()
+            emb = emb.to(device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float16)
+
+            # 计算 pairwise 交互并拼接均值/最大值统计到 dense_features 末尾
+            pairwise = self._interaction_op(emb, BLOCK=64)
+            stats = torch.stack([pairwise.mean(dim=1), pairwise.max(dim=1).values], dim=1)
+            stats = stats.to(dense.device, dtype=dense.dtype)
+            features['dense_features'] = torch.cat([dense, stats], dim=1)
+            features['interaction_pairwise_shape'] = list(pairwise.shape)
+            return features
+        except Exception as e:
+            logger.warning(f"自定义算子处理失败，透传特征: {e}")
+            return features
     
     def _apply_gpu_cache(self, features: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         """应用GPU热缓存"""

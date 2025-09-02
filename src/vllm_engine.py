@@ -17,14 +17,36 @@ import threading
 logger = logging.getLogger(__name__)
 
 try:
+    # 优先尝试本地或子模块化的开源vLLM安装
     from vllm import LLM, SamplingParams, Request
     from vllm.engine.arg_utils import AsyncEngineArgs
     from vllm.engine.async_llm_engine import AsyncLLMEngine
     from vllm.utils import random_uuid
     VLLM_AVAILABLE = True
 except ImportError:
-    VLLM_AVAILABLE = False
-    logger.warning("VLLM未安装，将使用模拟模式")
+    # 预留开放式导入：如项目集成开源实现为子包，可在此处追加路径
+    import os, sys
+    candidate_paths = [
+        os.path.join(os.path.dirname(__file__), '../third_party/vllm'),
+        os.path.join(os.path.dirname(__file__), '../../third_party/vllm')
+    ]
+    loaded = False
+    for p in candidate_paths:
+        if os.path.isdir(p):
+            sys.path.append(p)
+            try:
+                from vllm import LLM, SamplingParams, Request
+                from vllm.engine.arg_utils import AsyncEngineArgs
+                from vllm.engine.async_llm_engine import AsyncLLMEngine
+                from vllm.utils import random_uuid
+                VLLM_AVAILABLE = True
+                loaded = True
+                break
+            except Exception:
+                continue
+    if not loaded:
+        VLLM_AVAILABLE = False
+        logger.warning("VLLM未安装，将使用模拟模式（支持后续直接导入开源子模块）")
 
 @dataclass
 class VLLMConfig:
