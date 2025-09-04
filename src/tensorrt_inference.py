@@ -53,48 +53,27 @@ class TensorRTInference:
         # 创建执行上下文
         self.context = self.engine.create_execution_context()
         
-        # 获取输入输出信息
+        # 绑定信息与缓冲区
         self.input_names = []
         self.output_names = []
-        self.input_shapes = {}
-        self.output_shapes = {}
-        
+        self.binding_indices = {}
+        self.binding_dtypes = {}
+        self.host_inputs = {}
+        self.host_outputs = {}
+        self.device_buffers = {}
+        self.bindings = [None] * self.engine.num_bindings
+
         for i in range(self.engine.num_bindings):
             name = self.engine.get_binding_name(i)
-            shape = self.engine.get_binding_shape(i)
-            dtype = self.engine.get_binding_dtype(i)
-            
+            self.binding_indices[name] = i
+            self.binding_dtypes[name] = trt.nptype(self.engine.get_binding_dtype(i))
             if self.engine.binding_is_input(i):
                 self.input_names.append(name)
-                self.input_shapes[name] = shape
             else:
                 self.output_names.append(name)
-                self.output_shapes[name] = shape
-        
-        # 分配GPU内存
-        self.inputs = []
-        self.outputs = []
-        self.bindings = []
-        
-        for name in self.input_names:
-            shape = self.input_shapes[name]
-            size = trt.volume(shape) * self.engine.max_batch_size
-            dtype = trt.nptype(self.engine.get_binding_dtype(name))
-            
-            # 分配GPU内存
-            gpu_mem = cuda.mem_alloc(size * np.dtype(dtype).itemsize)
-            self.inputs.append(gpu_mem)
-            self.bindings.append(int(gpu_mem))
-        
-        for name in self.output_names:
-            shape = self.output_shapes[name]
-            size = trt.volume(shape) * self.engine.max_batch_size
-            dtype = trt.nptype(self.engine.get_binding_dtype(name))
-            
-            # 分配GPU内存
-            gpu_mem = cuda.mem_alloc(size * np.dtype(dtype).itemsize)
-            self.outputs.append(gpu_mem)
-            self.bindings.append(int(gpu_mem))
+
+        # CUDA stream
+        self.stream = cuda.Stream()
         
         logger.info(f"TensorRT推理器初始化完成，输入: {self.input_names}, 输出: {self.output_names}")
     
@@ -116,34 +95,55 @@ class TensorRTInference:
         try:
             # 准备输入数据
             if isinstance(input_data, torch.Tensor):
-                input_data = input_data.cpu().numpy()
-            
-            # 设置动态批次大小
-            batch_size = input_data.shape[0]
-            self.context.set_binding_shape(0, input_data.shape)
-            
-            # 复制数据到GPU
-            cuda.memcpy_htod(self.inputs[0], input_data.astype(np.float32))
-            
-            # 执行推理
-            self.context.execute_v2(bindings=self.bindings)
-            
-            # 获取输出结果
+                input_data = input_data.detach().cpu().numpy()
+
+            # 设置动态形状（假设单输入）
+            input_name = self.input_names[0]
+            input_index = self.binding_indices[input_name]
+            input_dtype = self.binding_dtypes[input_name]
+            self.context.set_binding_shape(input_index, input_data.shape)
+
+            # 分配/重用 host/device 缓冲
+            in_bytes = input_data.astype(input_dtype).nbytes
+            if input_name not in self.host_inputs or self.host_inputs[input_name].nbytes != in_bytes:
+                self.host_inputs[input_name] = cuda.pagelocked_empty(shape=input_data.size, dtype=input_dtype)
+                self.device_buffers[input_name] = cuda.mem_alloc(in_bytes)
+                self.bindings[input_index] = int(self.device_buffers[input_name])
+            np.copyto(self.host_inputs[input_name], input_data.ravel())
+
+            # 为每个输出准备缓冲
+            for name in self.output_names:
+                idx = self.binding_indices[name]
+                out_shape = tuple(self.context.get_binding_shape(idx))
+                out_dtype = self.binding_dtypes[name]
+                out_size = int(np.prod(out_shape)) if len(out_shape) > 0 else 1
+                nbytes = out_size * np.dtype(out_dtype).itemsize
+                if name not in self.host_outputs or self.host_outputs[name].nbytes != nbytes:
+                    self.host_outputs[name] = cuda.pagelocked_empty(shape=out_size, dtype=out_dtype)
+                    self.device_buffers[name] = cuda.mem_alloc(nbytes)
+                    self.bindings[idx] = int(self.device_buffers[name])
+
+            # H2D
+            cuda.memcpy_htod_async(self.device_buffers[input_name], self.host_inputs[input_name], self.stream)
+
+            # 执行推理（异步）
+            self.context.execute_async_v2(bindings=self.bindings, stream_handle=self.stream.handle)
+
+            # D2H
+            for name in self.output_names:
+                cuda.memcpy_dtoh_async(self.host_outputs[name], self.device_buffers[name], self.stream)
+
+            # 同步
+            self.stream.synchronize()
+
+            # 整理输出
             results = {}
-            for i, name in enumerate(self.output_names):
-                output_shape = self.context.get_binding_shape(i + len(self.input_names))
-                output_size = trt.volume(output_shape)
-                dtype = trt.nptype(self.engine.get_binding_dtype(name))
-                
-                # 分配CPU内存
-                output = np.empty(output_shape, dtype=dtype)
-                
-                # 从GPU复制结果
-                cuda.memcpy_dtoh(output, self.outputs[i])
-                
-                # 转换为torch张量
-                results[name] = torch.from_numpy(output)
-            
+            for name in self.output_names:
+                idx = self.binding_indices[name]
+                out_shape = tuple(self.context.get_binding_shape(idx))
+                arr = np.array(self.host_outputs[name]).reshape(out_shape)
+                results[name] = torch.from_numpy(arr.copy())
+
             return results
             
         except Exception as e:

@@ -227,9 +227,8 @@ class OptimizedInferencePipeline:
         """
         
         try:
-            # 1. 处理用户行为序列
-            sequence = self.behavior_processor.process_behavior_sequence(user_id, session_id, behaviors)
-            features = self._extract_features_from_sequence(sequence)
+            # 1. 从原始 behaviors 构建特征（直接解析字典列表，避免传错类型）
+            features = self._extract_features_from_sequence(behaviors)
             
             # 2. 选择推理策略
             if use_optimization == "auto":
@@ -243,11 +242,11 @@ class OptimizedInferencePipeline:
             
             # 3. 执行推理
             if use_optimization == "tensorrt":
-                result = self._infer_with_tensorrt(features, sequence, num_recommendations)
+                result = self._infer_with_tensorrt(features, behaviors, num_recommendations)
             elif use_optimization == "vllm":
                 result = self._infer_with_vllm(user_id, session_id, behaviors, num_recommendations)
             else:
-                result = self._infer_with_baseline(features, sequence, num_recommendations)
+                result = self._infer_with_baseline(features, behaviors, num_recommendations)
             
             # 4. 添加元数据
             result.update({
@@ -287,9 +286,8 @@ class OptimizedInferencePipeline:
         
         if not self.vllm_engine:
             logger.warning("VLLM引擎不可用，回退到基础推理")
-            sequence = self.behavior_processor.process_behavior_sequence(user_id, session_id, behaviors)
-            features = self._extract_features_from_sequence(sequence)
-            return self._infer_with_baseline(features, sequence, num_recommendations)
+            features = self._extract_features_from_sequence(behaviors)
+            return self._infer_with_baseline(features, behaviors, num_recommendations)
         
         try:
             # 调用VLLM引擎
@@ -306,9 +304,8 @@ class OptimizedInferencePipeline:
         except Exception as e:
             logger.error(f"VLLM推理失败: {e}")
             # 回退到基础推理
-            sequence = self.behavior_processor.process_behavior_sequence(user_id, session_id, behaviors)
-            features = self._extract_features_from_sequence(sequence)
-            return self._infer_with_baseline(features, sequence, num_recommendations)
+            features = self._extract_features_from_sequence(behaviors)
+            return self._infer_with_baseline(features, behaviors, num_recommendations)
     
     def _infer_with_baseline(self, features: Dict[str, Any], sequence, num_recommendations: int) -> Dict[str, Any]:
         """使用基础MTGR模型推理"""
@@ -364,35 +361,34 @@ class OptimizedInferencePipeline:
             }
         }
     
-    def _extract_features_from_sequence(self, sequence) -> Dict[str, Any]:
-        """从行为序列中提取特征"""
-        # 使用现有的特征提取逻辑
-        features = self.behavior_processor.process_behavior_sequence(sequence)
-        
-        # 转换为张量格式
+    def _extract_features_from_sequence(self, behaviors: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """从原始行为字典列表中提取最小可用特征，保证与模型输入对齐"""
         batch_size = 1
+        max_len = min(len(behaviors), 50)
+
+        # 基础 dense 特征 1024 维（简化：前三维填充统计特征，其余为 0）
         dense_features = torch.zeros(batch_size, 1024, dtype=torch.float32)
-        
-        # 填充特征（简化实现）
-        if features["sequence_length"] > 0:
-            dense_features[0, 0] = features["sequence_length"] / 100.0
-            dense_features[0, 1] = features["statistical_features"]["avg_watch_percentage"]
-            dense_features[0, 2] = features["statistical_features"]["like_rate"]
-        
-        # 输入ID序列
-        input_ids = torch.zeros(batch_size, min(len(features["video_ids"]), 50), dtype=torch.long)
-        for i, video_id in enumerate(features["video_ids"][:50]):
-            hash_value = hash(video_id) % 10000
-            input_ids[0, i] = hash_value
-        
+        if max_len > 0:
+            watch_percentages = [b.get("watch_percentage", 0.0) for b in behaviors[:max_len]]
+            like_flags = [1.0 if b.get("is_liked", False) else 0.0 for b in behaviors[:max_len]]
+            dense_features[0, 0] = float(max_len) / 100.0
+            dense_features[0, 1] = float(sum(watch_percentages)) / max(1, len(watch_percentages))
+            dense_features[0, 2] = float(sum(like_flags)) / max(1, len(like_flags))
+
+        # 输入 token ids：对 video_id 做 hash 限幅
+        input_ids = torch.zeros(batch_size, max_len, dtype=torch.long)
+        for i in range(max_len):
+            vid = behaviors[i].get("video_id", f"unknown_{i}")
+            input_ids[0, i] = hash(vid) % self.model_config.get('vocab_size', 50000)
+
         # 注意力掩码
         attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
-        
+
         return {
             "input_ids": input_ids,
             "dense_features": dense_features,
             "attention_mask": attention_mask,
-            "raw_features": features
+            "sequence_length": max_len,
         }
     
     def get_optimization_status(self) -> Dict[str, Any]:

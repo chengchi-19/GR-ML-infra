@@ -11,12 +11,16 @@ import os
 class EmbeddingCache:
     """GPU and host memory cache for embeddings"""
     
-    def __init__(self, cache_size: int, embedding_dim: int, dtype: torch.dtype = torch.float32):
+    def __init__(self, cache_size: int, embedding_dim: int, dtype: torch.dtype = torch.float32, device: str = None):
         self.cache_size = cache_size
         self.embedding_dim = embedding_dim
         self.dtype = dtype
         self.cache = OrderedDict()
-        self.gpu_buffer = torch.zeros((cache_size, embedding_dim), device='cuda', dtype=dtype)
+        # 设备自动选择
+        if device is None:
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.device = device
+        self.gpu_buffer = torch.zeros((cache_size, embedding_dim), device=self.device, dtype=dtype)
         self.free_slots = list(range(cache_size))
         self.lock = Lock()
         
@@ -29,18 +33,22 @@ class EmbeddingCache:
         """Put embedding in cache, return slot index"""
         with self.lock:
             if idx in self.cache:
-                return self.cache[idx]
+                slot = self.cache[idx]
+                # 读后更新到 LRU 尾部
+                self.cache.move_to_end(idx)
+                return slot
             
             if not self.free_slots:
                 # Evict least recently used
-                evicted_idx = next(iter(self.cache))
-                slot = self.cache.pop(evicted_idx)
+                evicted_idx, slot = self.cache.popitem(last=False)
             else:
                 slot = self.free_slots.pop(0)
             
             # Copy embedding to GPU buffer
-            self.gpu_buffer[slot].copy_(embedding.to('cuda', dtype=self.dtype))
+            target = embedding.to(self.device, dtype=self.dtype)
+            self.gpu_buffer[slot].copy_(target)
             self.cache[idx] = slot
+            self.cache.move_to_end(idx)
             return slot
     
     def get_embedding(self, slot: int) -> torch.Tensor:
@@ -172,11 +180,13 @@ class EmbeddingService:
     def lookup_batch(self, ids: List[int]) -> torch.Tensor:
         """Lookup batch of embeddings with optimization"""
         if not ids:
-            return torch.empty((0, self.emb_dim), device='cuda', dtype=self.dtype)
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            return torch.empty((0, self.emb_dim), device=device, dtype=self.dtype)
         
         # Pre-allocate output tensor
         batch_size = len(ids)
-        result = torch.zeros((batch_size, self.emb_dim), device='cuda', dtype=self.dtype)
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        result = torch.zeros((batch_size, self.emb_dim), device=device, dtype=self.dtype)
         
         # Process each embedding
         for i, idx in enumerate(ids):
@@ -187,10 +197,12 @@ class EmbeddingService:
     def lookup_batch_optimized(self, ids: List[int]) -> torch.Tensor:
         """Optimized batch lookup with reduced GPU transfers"""
         if not ids:
-            return torch.empty((0, self.emb_dim), device='cuda', dtype=self.dtype)
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            return torch.empty((0, self.emb_dim), device=device, dtype=self.dtype)
         
         batch_size = len(ids)
-        result = torch.zeros((batch_size, self.emb_dim), device='cuda', dtype=self.dtype)
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        result = torch.zeros((batch_size, self.emb_dim), device=device, dtype=self.dtype)
         
         # Group lookups by cache location
         gpu_indices = []

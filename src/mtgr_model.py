@@ -337,15 +337,19 @@ class MTGRModel(nn.Module):
         # 5. 通过HSTU层
         hidden_states = combined_emb
         for hstu_layer in self.hstu_layers:
-            # 调整注意力掩码尺寸以匹配序列长度
+            # 调整注意力掩码尺寸以匹配序列长度（在前置的基础上扩展特征位为可见）
             if attention_mask is not None:
-                # 扩展掩码以包含特征维度
+                if attention_mask.dtype != torch.bool:
+                    attention_mask = attention_mask.bool()
                 seq_len = hidden_states.size(1)
                 if attention_mask.size(1) != seq_len:
-                    # 创建新的掩码，包含特征维度
-                    new_mask = torch.ones(attention_mask.size(0), seq_len, dtype=attention_mask.dtype, device=attention_mask.device)
-                    # 保持原始序列的掩码，特征维度设为True
-                    new_mask[:, :attention_mask.size(1)] = attention_mask
+                    new_mask = torch.ones(
+                        attention_mask.size(0), seq_len,
+                        dtype=torch.bool, device=hidden_states.device
+                    )
+                    # 特征位置在序列开头，占用1个位置
+                    orig_len = min(attention_mask.size(1), seq_len - 1)
+                    new_mask[:, 1:1 + orig_len] = attention_mask[:, :orig_len]
                     attention_mask = new_mask
             hidden_states = hstu_layer(hidden_states, attention_mask)
         
@@ -404,13 +408,12 @@ class MTGRModel(nn.Module):
         Decode阶段：生成下一个token
         返回格式兼容原有接口
         """
-        # 构建输入序列
-        if past_key_value_states is not None:
-            # 如果有历史状态，拼接当前token
-            current_emb = self.token_embedding(token_id)
+        # 构建输入序列（将新 token 嵌入与历史隐藏拼接）
+        current_emb = self.token_embedding(token_id)  # [B, 1, d_model]
+        if past_key_value_states is not None and past_key_value_states.dim() == 3:
             combined_emb = torch.cat([past_key_value_states, current_emb], dim=1)
         else:
-            combined_emb = self.token_embedding(token_id)
+            combined_emb = current_emb
         
         # 特征处理
         feature_emb = self.feature_projection(dense_features).unsqueeze(1)
@@ -423,16 +426,16 @@ class MTGRModel(nn.Module):
             item_emb = self.item_feature_projection(item_features).unsqueeze(1)
             feature_emb = feature_emb + item_emb
         
-        # 应用动态掩码
-        masked_emb = self.dynamic_mask(combined_emb, token_id)
+        # 应用动态混合掩码（对末尾 token）
+        masked_emb = self.dynamic_mask(combined_emb, None)
         
         # 特征拼接
         full_emb = torch.cat([feature_emb, masked_emb], dim=1)
         
-        # 通过HSTU层
+        # 通过HSTU层（decode 阶段不传 mask，按 full_emb 全可见处理）
         hidden_states = full_emb
         for hstu_layer in self.hstu_layers:
-            hidden_states = hstu_layer(hidden_states)
+            hidden_states = hstu_layer(hidden_states, None)
         
         # 输出处理
         last_hidden = hidden_states[:, -1, :]

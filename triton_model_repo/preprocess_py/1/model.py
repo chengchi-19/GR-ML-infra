@@ -89,8 +89,8 @@ class PreprocessModel:
                             # 推荐特征 (30-31): source, position
                             dense_features[i, 30:32] = np.random.uniform(0, 1, 2)
                         
-                        # 转换为特征索引
-                        feature_indices = np.arange(batch_size * self.feature_dim, dtype=np.int32)
+                        # 输出为稠密特征矩阵
+                        feature_matrix = dense_features.astype(np.float32)
                         
                         logging.debug(f"处理了 {batch_size} 个用户行为序列，特征维度: {self.feature_dim}")
                         
@@ -98,14 +98,14 @@ class PreprocessModel:
                         logging.warning(f"用户行为序列处理失败，使用默认特征: {e}")
                         # 回退到默认处理
                         dense_features = np.random.randn(batch_size, self.feature_dim).astype(np.float32)
-                        feature_indices = np.arange(batch_size * self.feature_dim, dtype=np.int32)
+                        feature_matrix = dense_features
                 else:
                     # 原始处理逻辑
                     dense_features = np.random.randn(batch_size, self.feature_dim).astype(np.float32)
-                    feature_indices = np.arange(batch_size * self.feature_dim, dtype=np.int32)
+                    feature_matrix = dense_features
                 
                 # Create output tensor
-                output_tensor_pb = pb_utils.Tensor('out_feats', feature_indices)
+                output_tensor_pb = pb_utils.Tensor('out_feats', feature_matrix)
                 
                 # Create response
                 response = pb_utils.InferenceResponse(output_tensors=[output_tensor_pb])

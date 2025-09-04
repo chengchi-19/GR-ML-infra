@@ -59,12 +59,12 @@ def build_with_trtexec(onnx_path: str, engine_path: str, fp16: bool = True,
         f'--maxShapes=input_ids:{max_shape}'
     ])
     
-    # Add dense_features shape if present
+    # Add dense_features shape if present (align with model's 1024-dim)
     if 'dense_features' in get_onnx_inputs(onnx_path):
         cmd.extend([
-            f'--minShapes=dense_features:1x16',
-            f'--optShapes=dense_features:4x16',
-            f'--maxShapes=dense_features:8x16'
+            f'--minShapes=dense_features:1x1024',
+            f'--optShapes=dense_features:4x1024',
+            f'--maxShapes=dense_features:8x1024'
         ])
     
     # Add attention_mask shape if present
