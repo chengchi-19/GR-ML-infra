@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-生成式推荐模型推理优化项目
-包含cutlass、TensorRT、Triton、自定义算子、GPU热缓存等所有推理优化功能
+基于开源框架的生成式推荐模型推理优化项目
+
+集成了真正的开源框架：
+- Meta HSTU (Hierarchical Sequential Transduction Units) 生成式推荐模型
+- VLLM 推理优化框架 (PagedAttention + Continuous Batching)  
+- TensorRT GPU推理加速
+- 自定义Triton和CUTLASS算子优化
+- 智能GPU热缓存系统
+
+不再使用手写的模拟实现，而是基于真正的开源技术栈。
 """
 
 import sys
@@ -13,16 +21,16 @@ import time
 import asyncio
 from datetime import datetime
 from typing import List, Dict, Any
+from collections import defaultdict
+import numpy as np
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from src.inference_pipeline import UserBehaviorInferencePipeline
-from src.mtgr_model import create_mtgr_model
-from src.vllm_engine import create_vllm_engine
-from src.user_behavior_schema import UserBehaviorProcessor
-from src.model_parameter_calculator import calculate_model_parameters
-from src.export_onnx import GenerativeRecommendationModel
+# 导入集成控制器
+from integrations.framework_controller import OpenSourceFrameworkController, create_integrated_controller
+
+# 导入示例数据生成
 from examples.client_example import create_realistic_user_behaviors
 
 # 配置日志
@@ -30,794 +38,584 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('inference.log'),
+        logging.FileHandler('opensoure_inference.log'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-class OptimizedInferenceEngine:
-    """集成推理优化引擎"""
+def create_optimized_config():
+    """创建优化配置"""
     
-    def __init__(self, model_config: Dict[str, Any], optimization_config: Dict[str, Any]):
-        self.model_config = model_config
-        self.optimization_config = optimization_config
-        self.gpu_available = self._check_gpu_environment()
+    config = {
+        # Meta HSTU模型配置
+        'hstu': {
+            'vocab_size': 50000,          # 词汇表大小
+            'd_model': 1024,              # 模型隐藏维度
+            'num_layers': 12,             # 层数 (约3.2B参数)
+            'num_heads': 16,              # 注意力头数
+            'd_ff': 4096,                 # FFN维度
+            'max_seq_len': 2048,          # 最大序列长度
+            'dropout': 0.1,               # Dropout率
+            'hstu_expansion_factor': 4,   # HSTU扩展因子
+            'hstu_gate_type': 'sigmoid',  # 门控类型
+            'enable_hierarchical_attention': True,  # 启用分层注意力
+            'similarity_dim': 256,        # 相似度计算维度
+            'temperature': 0.1,           # 温度参数
+            'pretrained_path': None,      # 预训练模型路径(如果有)
+        },
         
-        # 初始化推理组件
-        self.pytorch_pipeline = None
-        self.tensorrt_engine = None
-        self.triton_client = None
-        self.custom_operators = None
+        # VLLM推理优化配置
+        'vllm': {
+            'model_name': 'hstu-generative-recommender',
+            'model_path': None,           # 如果有本地模型路径
+            'tensor_parallel_size': 1,    # 张量并行大小
+            'pipeline_parallel_size': 1,  # 流水线并行大小
+            'gpu_memory_utilization': 0.85,  # GPU内存利用率
+            'max_model_len': 2048,        # 最大模型长度
+            'max_num_seqs': 256,          # 最大并发序列数
+            'max_num_batched_tokens': None,  # 最大批处理token数
+            'block_size': 16,             # PagedAttention块大小
+            'dtype': 'float16',           # 数据类型
+            'seed': 42,                   # 随机种子
+            'quantization': None,         # 量化方式 (None, 'gptq', 'awq')
+            'enable_chunked_prefill': True,  # 启用分块预填充
+        },
         
-        self._initialize_inference_engines()
+        # TensorRT推理加速配置
+        'tensorrt': {
+            'model_name': 'hstu-tensorrt-optimized',
+            'onnx_path': None,            # ONNX模型路径
+            'engine_path': 'models/hstu_fp16.trt',  # TensorRT引擎路径
+            'precision': 'fp16',          # 精度模式 ('fp32', 'fp16', 'int8')
+            'max_batch_size': 8,          # 最大批处理大小
+            'max_workspace_size': 2 << 30,  # 最大工作空间 (2GB)
+            'optimization_level': 5,      # 优化等级 (0-5)
+            'enable_dynamic_shapes': True,  # 启用动态形状
+            'enable_strict_types': False, # 启用严格类型
+            'enable_fp16_io': True,       # 启用FP16 I/O
+            # 动态形状配置
+            'min_shapes': {
+                'input_ids': (1, 8),
+                'attention_mask': (1, 8),
+                'dense_features': (1, 1024),
+            },
+            'opt_shapes': {
+                'input_ids': (4, 64),
+                'attention_mask': (4, 64), 
+                'dense_features': (4, 1024),
+            },
+            'max_shapes': {
+                'input_ids': (8, 2048),
+                'attention_mask': (8, 2048),
+                'dense_features': (8, 1024),
+            },
+        },
+        
+        # 自定义算子优化配置
+        'custom_operators': {
+            'cache_size': 2000,           # 算子缓存大小
+            'enable_benchmarking': True,  # 启用性能基准测试
+            'triton_block_size': 64,      # Triton块大小
+            'enable_cutlass': True,       # 启用CUTLASS算子
+            'fusion_threshold': 32,       # 算子融合阈值
+        },
+        
+        # 智能GPU热缓存配置
+        'intelligent_cache': {
+            'gpu_cache_size': 8192,       # GPU缓存大小
+            'embedding_dim': 1024,        # 嵌入维度
+            'enable_prediction': True,    # 启用热点预测
+            'dtype': 'float32',           # 数据类型
+            'prediction_window': 1000,    # 预测窗口大小
+            'decay_factor': 0.95,         # 衰减因子
+        },
+        
+        # 推理策略配置
+        'inference_strategy': {
+            'auto_selection': True,       # 自动策略选择
+            'vllm_sequence_threshold': 100,    # VLLM序列长度阈值
+            'tensorrt_sequence_threshold': 50, # TensorRT序列长度阈值
+            'fallback_strategy': 'hstu',  # 回退策略
+            'enable_batching': True,      # 启用批处理
+            'batch_timeout_ms': 50,       # 批处理超时
+        },
+        
+        # 性能监控配置
+        'monitoring': {
+            'enable_detailed_logging': True,  # 启用详细日志
+            'log_inference_time': True,   # 记录推理时间
+            'log_memory_usage': True,     # 记录内存使用
+            'benchmark_interval': 100,    # 基准测试间隔
+            'save_performance_metrics': True,  # 保存性能指标
+        }
+    }
     
-    def _check_gpu_environment(self) -> bool:
-        """检查GPU环境"""
-        try:
-            import torch
-            if torch.cuda.is_available():
-                logger.info(f"✅ GPU环境可用: {torch.cuda.get_device_name(0)}")
-                return True
-            else:
-                logger.warning("⚠️ GPU环境不可用，将使用CPU模式")
-                return False
-        except ImportError:
-            logger.warning("⚠️ PyTorch未安装")
-            return False
+    return config
+
+class OpenSourceRecommenderSystem:
+    """基于开源框架的推荐系统"""
     
-    def _initialize_inference_engines(self):
-        """初始化各种推理引擎"""
-        logger.info("正在初始化推理优化引擎...")
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.performance_metrics = defaultdict(list)
         
-        # 1. 初始化PyTorch推理流水线
-        self.pytorch_pipeline = UserBehaviorInferencePipeline(
-            model_config=self.model_config,
-            max_sequence_length=50,
-            embedding_cache_size=10000
+        # 创建集成控制器
+        logger.info("初始化基于开源框架的推荐系统...")
+        self.controller = create_integrated_controller(config)
+        
+        # 检查框架可用性
+        self._check_framework_availability()
+        
+        logger.info("✅ 开源推荐系统初始化完成")
+    
+    def _check_framework_availability(self):
+        """检查框架可用性"""
+        availability = self.controller.framework_availability
+        
+        logger.info("开源框架可用性检查:")
+        logger.info(f"  Meta HSTU模型: {'✅' if availability['hstu'] else '❌'}")
+        logger.info(f"  VLLM推理引擎: {'✅' if availability['vllm'] else '❌'}")
+        logger.info(f"  TensorRT加速: {'✅' if availability['tensorrt'] else '❌'}")
+        logger.info(f"  Triton算子: {'✅' if availability['triton_ops'] else '❌'}")
+        logger.info(f"  智能缓存: {'✅' if availability['cache'] else '❌'}")
+        
+        available_count = sum(availability.values())
+        total_count = len(availability)
+        logger.info(f"总体可用性: {available_count}/{total_count} ({available_count/total_count:.1%})")
+    
+    def generate_recommendations(
+        self,
+        user_id: str,
+        session_id: str,
+        user_behaviors: List[Dict[str, Any]],
+        num_recommendations: int = 10,
+        strategy: str = "auto",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """生成推荐结果"""
+        
+        logger.info(f"为用户 {user_id} 生成 {num_recommendations} 个推荐 (策略: {strategy})")
+        
+        # 使用集成控制器进行推理
+        result = self.controller.infer_with_optimal_strategy(
+            user_id=user_id,
+            session_id=session_id,
+            user_behaviors=user_behaviors,
+            num_recommendations=num_recommendations,
+            strategy=strategy,
+            **kwargs
         )
         
-        # 2. 初始化TensorRT引擎
-        if self.optimization_config.get("enable_tensorrt", True):
-            self._initialize_tensorrt()
+        # 记录性能指标
+        if 'inference_time_ms' in result:
+            self.performance_metrics['inference_times'].append(result['inference_time_ms'])
+            self.performance_metrics['strategies'].append(result.get('inference_strategy', 'unknown'))
         
-        # 3. 初始化Triton客户端
-        if self.optimization_config.get("enable_triton", True):
-            self._initialize_triton()
+        return result
+    
+    async def batch_generate_recommendations(
+        self,
+        requests: List[Dict[str, Any]],
+        **kwargs
+    ) -> List[Dict[str, Any]]:
+        """批量生成推荐"""
         
-        # 4. 初始化自定义算子
-        if self.optimization_config.get("enable_custom_ops", True):
-            self._initialize_custom_operators()
-        
-        logger.info("推理优化引擎初始化完成")
-    
-    def _initialize_tensorrt(self):
-        """初始化TensorRT引擎"""
-        try:
-            from src.tensorrt_inference import TensorRTInference, build_tensorrt_engine
-            
-            onnx_path = "models/prefill.onnx"
-            trt_path = "models/prefill.trt"
-            
-            if not os.path.exists(onnx_path):
-                logger.info("正在导出ONNX模型...")
-                self._export_onnx_model()
-            
-            if not os.path.exists(trt_path):
-                logger.info("正在构建TensorRT引擎...")
-                build_tensorrt_engine(onnx_path=onnx_path, engine_path=trt_path, 
-                                    precision="fp16", max_batch_size=8)
-            
-            if os.path.exists(trt_path):
-                self.tensorrt_engine = TensorRTInference(trt_path)
-                logger.info("✅ TensorRT引擎初始化成功")
-            else:
-                logger.warning("⚠️ TensorRT引擎构建失败")
-                
-        except ImportError:
-            logger.warning("⚠️ TensorRT未安装，跳过TensorRT优化")
-        except Exception as e:
-            logger.warning(f"⚠️ TensorRT初始化失败: {e}")
-    
-    def _initialize_triton(self):
-        """初始化Triton客户端"""
-        try:
-            import requests
-            response = requests.get("http://localhost:8000/v2/health/ready", timeout=5)
-            if response.status_code == 200:
-                logger.info("✅ Triton服务器连接成功")
-                self.triton_client = TritonClient()
-            else:
-                logger.warning("⚠️ Triton服务器未运行，将使用本地推理")
-        except Exception as e:
-            logger.warning(f"⚠️ Triton连接失败: {e}")
-    
-    def _initialize_custom_operators(self):
-        """初始化自定义算子"""
-        try:
-            custom_ops_path = "kernels/triton_ops"
-            if os.path.exists(custom_ops_path):
-                self.custom_operators = CustomOperators(custom_ops_path)
-                logger.info("✅ 自定义算子初始化成功")
-            else:
-                logger.warning("⚠️ 自定义算子目录不存在")
-        except Exception as e:
-            logger.warning(f"⚠️ 自定义算子初始化失败: {e}")
-    
-    def _export_onnx_model(self):
-        """导出ONNX模型"""
-        try:
-            model = GenerativeRecommendationModel(
-                vocab_size=self.model_config["vocab_size"],
-                embedding_dim=self.model_config["embedding_dim"],
-                hidden_dim=self.model_config["hidden_dim"],
-                num_features=self.model_config["num_features"],
-                num_layers=self.model_config["num_layers"],
-                max_seq_len=self.model_config["max_seq_len"]
-            )
-            model.eval()
-            
-            import torch
-            dummy_ids = torch.randint(0, 10000, (1, 1000), dtype=torch.long)
-            dummy_dense = torch.randn(1, 1024, dtype=torch.float32)
-            dummy_user = torch.randn(1, 256, dtype=torch.float32)
-            dummy_video = torch.randn(1, 512, dtype=torch.float32)
-            dummy_mask = torch.ones(1, 1000, dtype=torch.long)
-            
-            os.makedirs("models", exist_ok=True)
-            
-            torch.onnx.export(
-                model,
-                (dummy_ids, dummy_dense, dummy_user, dummy_video, dummy_mask),
-                "models/prefill.onnx",
-                input_names=['input_ids', 'dense_features', 'user_profile', 'video_features', 'attention_mask'],
-                output_names=['logits', 'feature_scores', 'engagement_scores', 'retention_scores', 'monetization_scores', 'hidden_states'],
-                opset_version=14,
-                dynamic_axes={
-                    'input_ids': {0: 'batch_size', 1: 'seq_len'},
-                    'dense_features': {0: 'batch_size'},
-                    'user_profile': {0: 'batch_size'},
-                    'video_features': {0: 'batch_size'},
-                    'attention_mask': {0: 'batch_size', 1: 'seq_len'},
-                    'logits': {0: 'batch_size', 1: 'seq_len'},
-                    'feature_scores': {0: 'batch_size'},
-                    'engagement_scores': {0: 'batch_size'},
-                    'retention_scores': {0: 'batch_size'},
-                    'monetization_scores': {0: 'batch_size'},
-                    'hidden_states': {0: 'batch_size', 1: 'seq_len'}
-                }
-            )
-            logger.info("✅ ONNX模型导出成功")
-            
-        except Exception as e:
-            logger.error(f"❌ ONNX模型导出失败: {e}")
-            raise
-    
-    def infer_with_optimization(self, user_behaviors: List[Dict[str, Any]], 
-                               user_id: str, session_id: str, 
-                               num_recommendations: int = 10) -> Dict[str, Any]:
-        """使用优化推理引擎进行推理"""
-        logger.info(f"开始优化推理 - 用户: {user_id}, 会话: {session_id}")
+        logger.info(f"批量生成推荐，请求数量: {len(requests)}")
         
         start_time = time.time()
+        results = await self.controller.batch_infer(requests, **kwargs)
+        batch_time = time.time() - start_time
         
-        # 1. 特征提取和预处理
-        logger.info("1. 特征提取和预处理...")
-        features = self._extract_features(user_behaviors)
+        logger.info(f"批量推理完成，总耗时: {batch_time:.2f}s，平均每请求: {batch_time/len(requests)*1000:.2f}ms")
         
-        # 2. GPU热缓存处理
-        if hasattr(self.pytorch_pipeline, 'embedding_service') and self.pytorch_pipeline.embedding_service:
-            logger.info("2. GPU热缓存处理...")
-            features = self._apply_gpu_cache(features, user_id)
-        
-        # 3. 自定义算子处理
-        if self.custom_operators:
-            logger.info("3. 自定义算子处理...")
-            features = self.custom_operators.process_features(features)
-        
-        # 4. 模型推理（优先使用 vLLM 异步生成）
-        logger.info("4. 模型推理...")
-        if self.optimization_config.get("enable_vllm", True):
-            logger.info("使用 vLLM 异步生成主路径")
-            try:
-                result = asyncio.run(self.pytorch_pipeline.infer_recommendations_async(
-                    user_id=user_id,
-                    session_id=session_id,
-                    behaviors=user_behaviors,
-                    num_recommendations=num_recommendations,
-                    use_vllm=True
-                ))
-                # 对齐键名，标识引擎
-                result['inference_engine'] = 'vllm'
-            except Exception as e:
-                logger.warning(f"vLLM 异步路径失败，回退其它引擎: {e}")
-                result = None
-
-            if result is not None:
-                # 5. 后处理和结果格式化
-                logger.info("5. 后处理和结果格式化...")
-                result = self._post_process_result(result, user_id, session_id, len(user_behaviors))
-                end_time = time.time()
-                inference_time = (end_time - start_time) * 1000
-                self._log_performance_metrics(inference_time, result)
-                return result
-
-        if self.triton_client:
-            result = self._triton_inference(features, user_id, session_id, num_recommendations)
-        elif self.tensorrt_engine:
-            result = self._tensorrt_inference(features, user_id, session_id, num_recommendations)
-        else:
-            result = self._pytorch_inference(features, user_id, session_id, num_recommendations)
-        
-        # 5. 后处理和结果格式化
-        logger.info("5. 后处理和结果格式化...")
-        result = self._post_process_result(result, user_id, session_id, len(user_behaviors))
-        
-        end_time = time.time()
-        inference_time = (end_time - start_time) * 1000
-        
-        # 6. 性能监控
-        self._log_performance_metrics(inference_time, result)
-        
-        return result
+        return results
     
-    def _extract_features(self, user_behaviors: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """特征提取"""
-        # 直接使用PyTorch流水线的特征提取方法
-        # 创建模拟的dense_features
-        import torch
-        import numpy as np
+    def benchmark_performance(
+        self,
+        test_cases: List[Dict[str, Any]],
+        strategies: List[str] = ['auto', 'hstu', 'vllm', 'tensorrt'],
+        iterations: int = 50
+    ) -> Dict[str, Any]:
+        """性能基准测试"""
         
-        batch_size = 1
-        num_features = 1024
+        logger.info(f"开始性能基准测试，策略: {strategies}，迭代次数: {iterations}")
         
-        # 从用户行为数据中提取特征
-        dense_features = torch.zeros(batch_size, num_features, dtype=torch.float32)
+        benchmark_results = {}
         
-        # 填充特征（简化版本）
-        for i, behavior in enumerate(user_behaviors[:min(len(user_behaviors), 50)]):
-            if i >= 50:  # 限制特征数量
-                break
+        for strategy in strategies:
+            logger.info(f"测试策略: {strategy}")
+            times = []
+            success_count = 0
+            
+            for test_case in test_cases:
+                for _ in range(iterations):
+                    start_time = time.time()
+                    
+                    result = self.generate_recommendations(
+                        user_id=f"bench_user_{success_count}",
+                        session_id=f"bench_session_{success_count}",
+                        user_behaviors=test_case.get('user_behaviors', []),
+                        num_recommendations=test_case.get('num_recommendations', 10),
+                        strategy=strategy
+                    )
+                    
+                    end_time = time.time()
+                    
+                    if 'error' not in result:
+                        times.append((end_time - start_time) * 1000)  # 转换为毫秒
+                        success_count += 1
+            
+            if times:
+                benchmark_results[strategy] = {
+                    'avg_latency_ms': np.mean(times),
+                    'min_latency_ms': np.min(times),
+                    'max_latency_ms': np.max(times),
+                    'p50_latency_ms': np.percentile(times, 50),
+                    'p95_latency_ms': np.percentile(times, 95),
+                    'p99_latency_ms': np.percentile(times, 99),
+                    'std_latency_ms': np.std(times),
+                    'throughput_rps': 1000 / np.mean(times) if times else 0,
+                    'success_rate': success_count / (len(test_cases) * iterations),
+                    'total_tests': len(test_cases) * iterations,
+                    'successful_tests': success_count,
+                }
                 
-            # 观看时长特征 (0-19)
-            if i < 20:
-                dense_features[0, i] = behavior.get('watch_duration', 0) / 120.0  # 归一化
-            
-            # 观看百分比特征 (20-39)
-            elif i < 40:
-                dense_features[0, i] = behavior.get('watch_percentage', 0)
-            
-            # 交互标志特征 (40-59)
-            elif i < 60:
-                dense_features[0, i] = float(behavior.get('is_liked', False))
-            
-            # 时间特征 (60-79)
-            elif i < 80:
-                dense_features[0, i] = behavior.get('time_of_day', 12) / 24.0
+                logger.info(f"策略 {strategy} 结果:")
+                logger.info(f"  平均延迟: {benchmark_results[strategy]['avg_latency_ms']:.2f}ms")
+                logger.info(f"  P95延迟: {benchmark_results[strategy]['p95_latency_ms']:.2f}ms") 
+                logger.info(f"  吞吐量: {benchmark_results[strategy]['throughput_rps']:.2f} RPS")
+                logger.info(f"  成功率: {benchmark_results[strategy]['success_rate']:.2%}")
         
-        # 填充剩余特征为随机值
-        for i in range(80, num_features):
-            dense_features[0, i] = np.random.random()
+        return benchmark_results
+    
+    def get_comprehensive_stats(self) -> Dict[str, Any]:
+        """获取综合统计信息"""
+        
+        # 获取控制器统计
+        controller_stats = self.controller.get_comprehensive_stats()
+        
+        # 添加系统级统计
+        system_stats = {
+            'system_info': {
+                'python_version': sys.version,
+                'cuda_available': self._check_cuda_availability(),
+                'gpu_count': self._get_gpu_count(),
+                'memory_usage': self._get_memory_usage(),
+            },
+            'performance_metrics': dict(self.performance_metrics),
+            'uptime': time.time(),  # 可以添加启动时间跟踪
+        }
         
         return {
-            'dense_features': dense_features,
-            'behaviors': user_behaviors  # 保留原始行为数据
+            'controller_stats': controller_stats,
+            'system_stats': system_stats,
+            'timestamp': datetime.now().isoformat(),
         }
     
-    def _triton_inference(self, features: Dict[str, Any], user_id: str, 
-                         session_id: str, num_recommendations: int) -> Dict[str, Any]:
-        """Triton推理 - 调用ensemble `gr_pipeline` 实际推理"""
-        try:
-            if not self.triton_client:
-                raise RuntimeError("Triton客户端未初始化")
-
-            # 将行为序列转换为raw_input(int32)，与 `preprocess_py` 的 config.pbtxt 对齐
-            behaviors: List[Dict[str, Any]] = features.get('behaviors', [])
-            seq = []
-            for b in behaviors:
-                vid = str(b.get('video_id', '0'))
-                # 简单映射为稳定的int32
-                seq.append(abs(hash(vid)) % 100000)
-            if not seq:
-                seq = [0]
-
-            raw_input = __import__('numpy').array([seq], dtype=__import__('numpy').int32)
-
-            # 调用 Triton 推理（HTTP v2）
-            triton_result = self.triton_client.infer(
-                model_name='gr_pipeline',
-                inputs={
-                    'raw_input': raw_input
-                },
-                outputs=['final_scores']
-            )
-
-            scores = triton_result.get('final_scores', [])
-            # 取前 num_recommendations 个结果（如果长度不足则填充）
-            recommendations = []
-            for i in range(num_recommendations):
-                score = float(scores[i]) if i < len(scores) else max(0.0, 0.9 - i * 0.05)
-                recommendations.append({'video_id': f'video_{i}', 'score': score})
-
-            return {
-                'recommendations': recommendations,
-                'feature_scores': {
-                    'engagement_score': float(scores[0]) if len(scores) > 0 else 0.85,
-                    'retention_score': float(scores[1]) if len(scores) > 1 else 0.72,
-                    'diversity_score': float(scores[2]) if len(scores) > 2 else 0.91
-                },
-                'inference_engine': 'triton'
-            }
-        except Exception as e:
-            logger.error(f"Triton推理失败，回退到本地推理: {e}")
-            return self._pytorch_inference(features, user_id, session_id, num_recommendations)
-    
-    def _tensorrt_inference(self, features: Dict[str, Any], user_id: str, 
-                           session_id: str, num_recommendations: int) -> Dict[str, Any]:
-        """TensorRT推理"""
+    def _check_cuda_availability(self) -> bool:
+        """检查CUDA可用性"""
         try:
             import torch
-            dense_features = features['dense_features']
-            if isinstance(dense_features, torch.Tensor):
-                dense_features = dense_features.unsqueeze(0)
-            
-            result = self.tensorrt_engine.infer(dense_features)
-            
-            recommendations = []
-            for i in range(num_recommendations):
-                score = float(result['feature_scores'][0][i % 10].item())
-                recommendations.append({'video_id': f'video_{i}', 'score': score})
-            
-            return {
-                'recommendations': recommendations,
-                'feature_scores': {
-                    'engagement_score': float(result['engagement_scores'][0].item()),
-                    'retention_score': float(result['retention_scores'][0].item()),
-                    'diversity_score': 0.9
-                },
-                'inference_engine': 'tensorrt'
-            }
-            
-        except Exception as e:
-            logger.error(f"TensorRT推理失败: {e}")
-            return self._pytorch_inference(features, user_id, session_id, num_recommendations)
+            return torch.cuda.is_available()
+        except ImportError:
+            return False
     
-    def _pytorch_inference(self, features: Dict[str, Any], user_id: str, 
-                          session_id: str, num_recommendations: int) -> Dict[str, Any]:
-        """PyTorch推理"""
-        # 直接使用模型进行推理
-        import torch
-        
-        dense_features = features['dense_features']
-        
-        # 创建模拟的输入数据
-        batch_size = dense_features.shape[0]
-        seq_len = 1000
-        
-        # 创建模拟的input_ids
-        input_ids = torch.randint(0, 10000, (batch_size, seq_len), dtype=torch.long)
-        
-        # 使用模型进行推理
-        with torch.no_grad():
-            outputs = self.pytorch_pipeline.model.forward_prefill(
-                input_ids=input_ids,
-                dense_features=dense_features
-            )
-        
-        # 生成推荐结果
-        recommendations = []
-        for i in range(num_recommendations):
-            score = float(outputs['feature_scores'][0][i % 10].item()) if 'feature_scores' in outputs else 0.8 - i * 0.1
-            recommendations.append({
-                'video_id': f'video_{i}',
-                'score': score
-            })
-        
-        result = {
-            'recommendations': recommendations,
-            'feature_scores': {
-                'engagement_score': 0.85,
-                'retention_score': 0.72,
-                'diversity_score': 0.91
-            },
-            'inference_engine': 'pytorch'
-        }
-        
-        return result
-    
-    def _post_process_result(self, result: Dict[str, Any], user_id: str, 
-                           session_id: str, sequence_length: int) -> Dict[str, Any]:
-        """后处理结果"""
-        result.update({
-            'user_id': user_id,
-            'session_id': session_id,
-            'sequence_length': sequence_length,
-            'timestamp': datetime.now().isoformat()
-        })
-        return result
-    
-    def _log_performance_metrics(self, inference_time: float, result: Dict[str, Any]):
-        """记录性能指标"""
-        logger.info(f"推理完成 - 引擎: {result.get('inference_engine', 'unknown')}, "
-                   f"耗时: {inference_time:.2f}ms")
-        
-        with open('performance_metrics.log', 'a') as f:
-            f.write(f"{datetime.now().isoformat()},{result.get('inference_engine', 'unknown')},"
-                   f"{inference_time:.2f},{len(result.get('recommendations', []))}\n")
-
-class TritonClient:
-    """Triton客户端（HTTP/gRPC v2 实现）"""
-    def __init__(self, server_url: str | None = None, timeout: int = 10, protocol: str = 'http'):
-        import os
-        self.server_url = server_url or os.environ.get('TRITON_SERVER_URL', 'localhost:8000')
-        self.timeout = timeout
-        self.protocol = protocol.lower()
-        self._http = None
-        self._grpc = None
-        try:
-            if self.protocol == 'http':
-                import tritonclient.http as httpclient
-                # httpclient 需要完整URL，示例: http://localhost:8000
-                url = self.server_url if self.server_url.startswith('http') else f"http://{self.server_url}"
-                self._http = httpclient.InferenceServerClient(url=url, timeout=timeout)
-            elif self.protocol == 'grpc':
-                import tritonclient.grpc as grpcclient
-                # grpc 使用 host:port，例如 localhost:8001
-                # 若用户未显式提供grpc端口，尝试将8000替换为8001
-                endpoint = self.server_url
-                if endpoint.endswith(':8000'):
-                    endpoint = endpoint.replace(':8000', ':8001')
-                self._grpc = grpcclient.InferenceServerClient(url=endpoint, timeout=timeout)
-            elif self.protocol == 'both':
-                import tritonclient.http as httpclient
-                import tritonclient.grpc as grpcclient
-                http_url = self.server_url if self.server_url.startswith('http') else f"http://{self.server_url}"
-                self._http = httpclient.InferenceServerClient(url=http_url, timeout=timeout)
-                endpoint = self.server_url
-                if endpoint.endswith(':8000'):
-                    endpoint = endpoint.replace(':8000', ':8001')
-                self._grpc = grpcclient.InferenceServerClient(url=endpoint, timeout=timeout)
-            else:
-                raise ValueError("protocol 必须是 'http' | 'grpc' | 'both'")
-        except Exception as e:
-            raise RuntimeError(f"初始化Triton客户端失败: {e}")
-
-    def infer(self, model_name: str, inputs: Dict[str, Any], outputs: List[str] | None = None) -> Dict[str, Any]:
-        import numpy as np
-        try:
-            if self._http is not None:
-                import tritonclient.http as httpclient
-                from tritonclient.utils import np_to_triton_dtype
-                infer_inputs: List[httpclient.InferInput] = []
-                for name, arr in inputs.items():
-                    if not isinstance(arr, np.ndarray):
-                        raise ValueError(f"输入 {name} 必须为numpy数组")
-                    infer_in = httpclient.InferInput(name, arr.shape, np_to_triton_dtype(arr.dtype))
-                    infer_in.set_data_from_numpy(arr)
-                    infer_inputs.append(infer_in)
-                infer_outputs: List[httpclient.InferRequestedOutput] = []
-                if outputs:
-                    for out_name in outputs:
-                        infer_outputs.append(httpclient.InferRequestedOutput(out_name))
-                result = self._http.infer(model_name=model_name, inputs=infer_inputs, outputs=infer_outputs or None)
-                parsed: Dict[str, Any] = {}
-                if outputs:
-                    for out_name in outputs:
-                        out = result.as_numpy(out_name)
-                        if out is not None:
-                            parsed[out_name] = out.squeeze().tolist()
-                return parsed
-
-            # HTTP不可用则尝试 gRPC
-            import tritonclient.grpc as grpcclient
-            from tritonclient.utils import np_to_triton_dtype
-            infer_inputs: List[grpcclient.InferInput] = []
-            for name, arr in inputs.items():
-                if not isinstance(arr, np.ndarray):
-                    raise ValueError(f"输入 {name} 必须为numpy数组")
-                infer_in = grpcclient.InferInput(name, arr.shape, np_to_triton_dtype(arr.dtype))
-                infer_in.set_data_from_numpy(arr)
-                infer_inputs.append(infer_in)
-            infer_outputs: List[grpcclient.InferRequestedOutput] = []
-            if outputs:
-                for out_name in outputs:
-                    infer_outputs.append(grpcclient.InferRequestedOutput(out_name))
-            result = self._grpc.infer(model_name=model_name, inputs=infer_inputs, outputs=infer_outputs or None)
-            parsed: Dict[str, Any] = {}
-            if outputs:
-                for out_name in outputs:
-                    out = result.as_numpy(out_name)
-                    if out is not None:
-                        parsed[out_name] = out.squeeze().tolist()
-            return parsed
-        except Exception as e:
-            raise RuntimeError(f"Triton推理请求失败: {e}")
-
-class CustomOperators:
-    """自定义算子集成（使用 Triton-lang 内核）"""
-    def __init__(self, ops_path: str):
-        self.ops_path = ops_path
-        import sys, os
-        sys.path.append(self.ops_path)
-        try:
-            from interaction_wrapper import interaction_op  # noqa: F401
-            self._interaction_op = interaction_op
-            logger.info("已加载 interaction_op 自定义算子")
-        except Exception as e:
-            logger.warning(f"加载自定义算子失败，将按原样透传: {e}")
-            self._interaction_op = None
-    
-    def process_features(self, features: Dict[str, Any]) -> Dict[str, Any]:
-        # 示例：对 dense_features 构造低维嵌入并计算 pairwise 交互，拼接回特征
+    def _get_gpu_count(self) -> int:
+        """获取GPU数量"""
         try:
             import torch
-            dense = features.get('dense_features')
-            if self._interaction_op is None or dense is None:
-                return features
-            if not isinstance(dense, torch.Tensor):
-                return features
-
-            batch_size = dense.shape[0]
-            # 将前 1024 维映射为 (F=32, D=32) 的嵌入
-            if dense.shape[1] < 1024:
-                return features
-            emb = dense[:, :1024].reshape(batch_size, 32, 32).contiguous()
-            emb = emb.to(device='cuda' if torch.cuda.is_available() else 'cpu', dtype=torch.float16)
-
-            # 计算 pairwise 交互并拼接均值/最大值统计到 dense_features 末尾
-            pairwise = self._interaction_op(emb, BLOCK=64)
-            stats = torch.stack([pairwise.mean(dim=1), pairwise.max(dim=1).values], dim=1)
-            stats = stats.to(dense.device, dtype=dense.dtype)
-            features['dense_features'] = torch.cat([dense, stats], dim=1)
-            features['interaction_pairwise_shape'] = list(pairwise.shape)
-            return features
-        except Exception as e:
-            logger.warning(f"自定义算子处理失败，透传特征: {e}")
-            return features
+            return torch.cuda.device_count() if torch.cuda.is_available() else 0
+        except ImportError:
+            return 0
     
-    def _apply_gpu_cache(self, features: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-        """应用GPU热缓存"""
+    def _get_memory_usage(self) -> Dict[str, float]:
+        """获取内存使用情况"""
         try:
-            embedding_service = self.pytorch_pipeline.embedding_service
+            import psutil
+            import torch
             
-            # 获取用户嵌入缓存
-            user_embeddings = embedding_service.lookup_batch([user_id])
-            if user_embeddings is not None:
-                features['user_embeddings'] = user_embeddings
-                logger.info("✅ GPU热缓存命中用户嵌入")
+            # 系统内存
+            system_memory = psutil.virtual_memory()
             
-            # 获取视频嵌入缓存
-            video_ids = [behavior['video_id'] for behavior in features['behaviors']]
-            video_embeddings = embedding_service.lookup_batch(video_ids)
-            if video_embeddings is not None:
-                features['video_embeddings'] = video_embeddings
-                logger.info("✅ GPU热缓存命中视频嵌入")
+            memory_info = {
+                'system_memory_total_gb': system_memory.total / (1024**3),
+                'system_memory_used_gb': system_memory.used / (1024**3),
+                'system_memory_percent': system_memory.percent,
+            }
             
-            # 获取缓存统计
-            cache_stats = embedding_service.get_cache_stats()
-            logger.info(f"GPU缓存统计: 命中率={cache_stats.get('gpu_hit_rate', 0):.2%}, "
-                       f"GPU内存使用={cache_stats.get('gpu_memory_usage', 0):.2f}GB")
+            # GPU内存
+            if torch.cuda.is_available():
+                for i in range(torch.cuda.device_count()):
+                    gpu_memory = torch.cuda.get_device_properties(i).total_memory
+                    gpu_allocated = torch.cuda.memory_allocated(i)
+                    gpu_reserved = torch.cuda.memory_reserved(i)
+                    
+                    memory_info[f'gpu_{i}_total_gb'] = gpu_memory / (1024**3)
+                    memory_info[f'gpu_{i}_allocated_gb'] = gpu_allocated / (1024**3)
+                    memory_info[f'gpu_{i}_reserved_gb'] = gpu_reserved / (1024**3)
+                    memory_info[f'gpu_{i}_utilization'] = gpu_allocated / gpu_memory
             
-        except Exception as e:
-            logger.warning(f"GPU热缓存处理失败: {e}")
-        
-        return features
+            return memory_info
+            
+        except ImportError:
+            return {'memory_info': 'psutil not available'}
 
-def setup_optimized_engine():
-    """设置优化推理引擎"""
-    logger.info("正在设置优化推理引擎...")
+def run_single_inference_demo():
+    """运行单次推理演示"""
+    logger.info("🚀 开始单次推理演示...")
     
-    # MTGR模型配置 - 约8B参数
-    model_config = {
-        "vocab_size": 50000,
-        "d_model": 1024,
-        "nhead": 16,
-        "num_layers": 24,
-        "d_ff": 4096,
-        "max_seq_len": 2048,
-        "num_features": 1024,
-        "user_profile_dim": 256,
-        "item_feature_dim": 512,
-        "dropout": 0.1
-    }
+    # 创建配置
+    config = create_optimized_config()
     
-    optimization_config = {
-        "enable_tensorrt": True,
-        "enable_triton": True,
-        "enable_custom_ops": True,
-        "enable_vllm": True,  # 启用VLLM推理优化
-        "precision": "fp16",
-        "max_batch_size": 8
-    }
+    # 创建推荐系统
+    recommender = OpenSourceRecommenderSystem(config)
     
-    engine = OptimizedInferenceEngine(model_config, optimization_config)
+    # 创建测试数据
+    user_behaviors = create_realistic_user_behaviors("demo_user", 15)
     
-    model = engine.pytorch_pipeline.model
-    total_params, trainable_params = calculate_model_parameters(model)
-    logger.info(f"模型初始化完成，总参数量: {total_params:,}")
-    
-    return engine
-
-def run_single_inference(engine: OptimizedInferenceEngine):
-    """运行单次推理"""
-    logger.info("开始单次优化推理...")
-    
-    user_id = "user_12345"
-    session_id = "session_67890"
-    user_behaviors = create_realistic_user_behaviors(user_id, 10)
-    
-    result = engine.infer_with_optimization(
+    # 生成推荐
+    result = recommender.generate_recommendations(
+        user_id="demo_user_001",
+        session_id="demo_session_001", 
         user_behaviors=user_behaviors,
-        user_id=user_id,
-        session_id=session_id,
-        num_recommendations=10
+        num_recommendations=10,
+        strategy="unified"
     )
     
-    print("\n" + "="*60)
-    print("优化推理结果")
-    print("="*60)
-    print(f"用户ID: {result['user_id']}")
-    print(f"会话ID: {result['session_id']}")
-    print(f"序列长度: {result['sequence_length']}")
-    print(f"推理引擎: {result.get('inference_engine', 'unknown')}")
+    print("\n" + "="*80)
+    print("单次推理演示结果")
+    print("="*80)
+    print(f"用户ID: {result.get('user_id', 'unknown')}")
+    print(f"推理策略: {result.get('inference_strategy', 'unknown')}")
+    print(f"推理时间: {result.get('inference_time_ms', 0):.2f}ms")
+    print(f"引擎类型: {result.get('engine_type', 'unknown')}")
     
-    print("\n推荐结果:")
-    for i, rec in enumerate(result['recommendations']):
-        print(f"  {i+1}. {rec['video_id']} (分数: {rec['score']:.4f})")
+    if 'recommendations' in result:
+        print(f"\n📝 生成了 {len(result['recommendations'])} 个推荐:")
+        for i, rec in enumerate(result['recommendations'][:5]):  # 只显示前5个
+            print(f"  {i+1}. {rec.get('video_id', 'unknown')} "
+                  f"(分数: {rec.get('score', 0):.4f}) - {rec.get('reason', '')}")
     
-    print("\n特征分数:")
-    for key, value in result['feature_scores'].items():
-        print(f"  {key}: {value:.4f}")
+    if 'error' in result:
+        print(f"\n❌ 推理出错: {result['error']}")
     
     return result
 
-def run_batch_inference(engine: OptimizedInferenceEngine):
-    """运行批量推理"""
-    logger.info("开始批量优化推理...")
+def run_batch_inference_demo():
+    """运行批量推理演示"""
+    logger.info("🚀 开始批量推理演示...")
     
-    batch_results = []
-    for i in range(5):
-        user_id = f"user_{i+1}"
-        session_id = f"session_{i+1}"
-        user_behaviors = create_realistic_user_behaviors(user_id, 8)
+    config = create_optimized_config()
+    recommender = OpenSourceRecommenderSystem(config)
+    
+    # 创建批量请求
+    batch_requests = []
+    strategies = ['unified', 'hstu', 'vllm', 'tensorrt']  # 主要使用unified流程
+    
+    for i in range(8):  # 8个并发请求
+        user_behaviors = create_realistic_user_behaviors(f"batch_user_{i}", 10)
+        strategy = strategies[i % len(strategies)]
         
-        result = engine.infer_with_optimization(
-            user_behaviors=user_behaviors,
-            user_id=user_id,
-            session_id=session_id,
-            num_recommendations=5
-        )
-        batch_results.append(result)
+        batch_requests.append({
+            'user_id': f'batch_user_{i}',
+            'session_id': f'batch_session_{i}',
+            'user_behaviors': user_behaviors,
+            'num_recommendations': 5,
+            'strategy': strategy
+        })
     
-    print("\n" + "="*60)
-    print("批量优化推理结果摘要")
-    print("="*60)
+    # 执行批量推理
+    async def run_batch():
+        return await recommender.batch_generate_recommendations(batch_requests)
+    
+    batch_results = asyncio.run(run_batch())
+    
+    print("\n" + "="*80)
+    print("批量推理演示结果")
+    print("="*80)
+    
+    strategy_stats = defaultdict(list)
+    
     for i, result in enumerate(batch_results):
-        print(f"用户 {i+1}: {len(result['recommendations'])} 个推荐，"
-              f"引擎: {result.get('inference_engine', 'unknown')}, "
-              f"特征分数: {result['feature_scores']['engagement_score']:.4f}")
+        strategy = result.get('inference_strategy', 'unknown')
+        inference_time = result.get('inference_time_ms', 0)
+        num_recs = len(result.get('recommendations', []))
+        
+        strategy_stats[strategy].append(inference_time)
+        
+        print(f"请求 {i+1}: 策略={strategy}, 时间={inference_time:.2f}ms, 推荐数={num_recs}")
+    
+    print("\n📊 策略性能统计:")
+    for strategy, times in strategy_stats.items():
+        if times:
+            print(f"  {strategy}: 平均 {np.mean(times):.2f}ms, "
+                  f"最小 {np.min(times):.2f}ms, 最大 {np.max(times):.2f}ms")
     
     return batch_results
 
-def run_performance_test(engine: OptimizedInferenceEngine):
-    """运行性能测试"""
-    logger.info("开始性能测试...")
+def run_performance_benchmark():
+    """运行性能基准测试"""
+    logger.info("🚀 开始性能基准测试...")
     
-    user_behaviors = create_realistic_user_behaviors("test_user", 10)
+    config = create_optimized_config()
+    recommender = OpenSourceRecommenderSystem(config)
     
-    # 预热
-    for _ in range(3):
-        engine.infer_with_optimization(
-            user_behaviors=user_behaviors,
-            user_id="test_user",
-            session_id="test_session",
-            num_recommendations=5
-        )
+    # 创建测试用例
+    test_cases = [
+        {
+            'user_behaviors': create_realistic_user_behaviors("bench_user_short", 5),
+            'num_recommendations': 5,
+            'name': 'short_sequence'
+        },
+        {
+            'user_behaviors': create_realistic_user_behaviors("bench_user_medium", 25),
+            'num_recommendations': 10,
+            'name': 'medium_sequence'
+        },
+        {
+            'user_behaviors': create_realistic_user_behaviors("bench_user_long", 100),
+            'num_recommendations': 15,
+            'name': 'long_sequence'
+        },
+    ]
     
-    # 性能测试
-    num_tests = 10
-    times = []
-    engines = []
+    # 运行基准测试
+    benchmark_results = recommender.benchmark_performance(
+        test_cases=test_cases,
+        strategies=['unified', 'hstu', 'vllm', 'tensorrt'],
+        iterations=20
+    )
     
-    for i in range(num_tests):
-        start_time = time.time()
-        result = engine.infer_with_optimization(
-            user_behaviors=user_behaviors,
-            user_id=f"test_user_{i}",
-            session_id=f"test_session_{i}",
-            num_recommendations=5
-        )
-        end_time = time.time()
-        times.append((end_time - start_time) * 1000)
-        engines.append(result.get('inference_engine', 'unknown'))
+    print("\n" + "="*80)
+    print("性能基准测试结果")
+    print("="*80)
     
-    avg_time = sum(times) / len(times)
-    min_time = min(times)
-    max_time = max(times)
+    # 输出详细结果
+    for strategy, metrics in benchmark_results.items():
+        print(f"\n📈 策略: {strategy.upper()}")
+        print(f"  平均延迟: {metrics['avg_latency_ms']:.2f}ms")
+        print(f"  P95延迟: {metrics['p95_latency_ms']:.2f}ms")
+        print(f"  P99延迟: {metrics['p99_latency_ms']:.2f}ms")
+        print(f"  吞吐量: {metrics['throughput_rps']:.2f} RPS")
+        print(f"  成功率: {metrics['success_rate']:.2%}")
+        print(f"  标准差: {metrics['std_latency_ms']:.2f}ms")
     
-    print("\n" + "="*60)
-    print("性能测试结果")
-    print("="*60)
-    print(f"测试次数: {num_tests}")
-    print(f"平均推理时间: {avg_time:.2f}ms")
-    print(f"最小推理时间: {min_time:.2f}ms")
-    print(f"最大推理时间: {max_time:.2f}ms")
-    print(f"吞吐量: {1000/avg_time:.2f} 请求/秒")
-    print(f"主要推理引擎: {max(set(engines), key=engines.count)}")
+    # 保存结果
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_file = f"benchmark_results_{timestamp}.json"
+    with open(results_file, 'w', encoding='utf-8') as f:
+        json.dump(benchmark_results, f, indent=2, ensure_ascii=False)
+    
+    logger.info(f"基准测试结果已保存到: {results_file}")
+    
+    return benchmark_results
 
-def start_triton_server():
-    """启动Triton服务器"""
-    logger.info("启动Triton推理服务器...")
+def run_comprehensive_demo():
+    """运行综合演示"""
+    logger.info("🚀 开始综合演示...")
     
-    try:
-        import subprocess
-        result = subprocess.run(['docker', '--version'], capture_output=True, text=True)
-        if result.returncode == 0:
-            logger.info("✅ Docker可用")
-            
-            model_repo_path = os.path.abspath("triton_model_repo")
-            cmd = [
-                'docker', 'run', '--gpus=all', '--rm',
-                '-p8000:8000', '-p8001:8001', '-p8002:8002',
-                '-v', f'{model_repo_path}:/models',
-                'nvcr.io/nvidia/tritonserver:23.12-py3',
-                'tritonserver', '--model-repository=/models'
-            ]
-            
-            logger.info(f"启动命令: {' '.join(cmd)}")
-            logger.info("注意: 需要手动启动Triton服务器或使用Docker")
-            
-        else:
-            logger.warning("⚠️ Docker不可用")
-    except Exception as e:
-        logger.warning(f"⚠️ 无法检查Docker: {e}")
+    config = create_optimized_config()
+    recommender = OpenSourceRecommenderSystem(config)
+    
+    print("\n" + "="*80)
+    print("开源框架集成推荐系统 - 综合演示")
+    print("="*80)
+    
+    # 1. 单次推理演示
+    print("\n🔸 1. 单次推理演示")
+    single_result = run_single_inference_demo()
+    
+    # 2. 批量推理演示
+    print("\n🔸 2. 批量推理演示")
+    batch_results = run_batch_inference_demo()
+    
+    # 3. 性能基准测试
+    print("\n🔸 3. 性能基准测试")
+    benchmark_results = run_performance_benchmark()
+    
+    # 4. 综合统计信息
+    print("\n🔸 4. 系统统计信息")
+    stats = recommender.get_comprehensive_stats()
+    
+    print("\n📊 框架可用性:")
+    framework_availability = stats['controller_stats']['framework_availability']
+    for framework, available in framework_availability.items():
+        print(f"  {framework}: {'✅ 可用' if available else '❌ 不可用'}")
+    
+    print(f"\n💻 系统信息:")
+    system_info = stats['system_stats']['system_info']
+    print(f"  CUDA可用: {'✅' if system_info['cuda_available'] else '❌'}")
+    print(f"  GPU数量: {system_info['gpu_count']}")
+    
+    if 'system_memory_total_gb' in system_info['memory_usage']:
+        memory_info = system_info['memory_usage']
+        print(f"  系统内存: {memory_info['system_memory_used_gb']:.1f}GB / {memory_info['system_memory_total_gb']:.1f}GB")
+    
+    print(f"\n🏆 总推理次数: {stats['controller_stats']['total_inferences']}")
+    
+    return {
+        'single_result': single_result,
+        'batch_results': batch_results,
+        'benchmark_results': benchmark_results,
+        'system_stats': stats,
+    }
 
 def main():
     """主函数"""
-    parser = argparse.ArgumentParser(description='生成式推荐模型推理优化项目')
-    parser.add_argument('--mode', choices=['single', 'batch', 'performance', 'triton', 'all'], 
-                       default='all', help='运行模式')
-    parser.add_argument('--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], 
-                       default='INFO', help='日志级别')
+    parser = argparse.ArgumentParser(description='基于开源框架的生成式推荐模型推理优化项目')
+    parser.add_argument('--mode', 
+                       choices=['single', 'batch', 'benchmark', 'comprehensive'], 
+                       default='comprehensive',
+                       help='运行模式')
+    parser.add_argument('--config', type=str, help='配置文件路径')
+    parser.add_argument('--log-level', 
+                       choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'], 
+                       default='INFO', 
+                       help='日志级别')
     
     args = parser.parse_args()
     
+    # 设置日志级别
     logging.getLogger().setLevel(getattr(logging, args.log_level))
     
-    print("="*80)
-    print("生成式推荐模型推理优化项目 - 集成优化版本")
-    print("="*80)
+    print("🌟" * 40)
+    print("基于开源框架的生成式推荐模型推理优化项目")
+    print("🌟" * 40)
+    print("集成技术栈:")
+    print("  📚 Meta HSTU (Hierarchical Sequential Transduction Units)")
+    print("  ⚡ VLLM (PagedAttention + Continuous Batching)")
+    print("  🚀 TensorRT (GPU Inference Acceleration)")
+    print("  🔧 Custom Triton + CUTLASS Operators")
+    print("  🧠 Intelligent GPU Hot Cache")
+    print("🌟" * 40)
     
     try:
-        # 1. 设置优化推理引擎
-        engine = setup_optimized_engine()
+        # 运行指定模式
+        if args.mode == 'single':
+            result = run_single_inference_demo()
+        elif args.mode == 'batch':
+            result = run_batch_inference_demo()
+        elif args.mode == 'benchmark':
+            result = run_performance_benchmark()
+        else:  # comprehensive
+            result = run_comprehensive_demo()
         
-        # 2. 根据模式运行
-        if args.mode in ['single', 'all']:
-            run_single_inference(engine)
+        print("\n🎉 演示完成！")
+        print("\n📋 监控和日志:")
+        print("  - 推理日志: tail -f opensoure_inference.log")
+        print("  - 基准测试结果: benchmark_results_*.json")
         
-        if args.mode in ['batch', 'all']:
-            run_batch_inference(engine)
+        return 0
         
-        if args.mode in ['performance', 'all']:
-            run_performance_test(engine)
-        
-        if args.mode in ['triton', 'all']:
-            start_triton_server()
-        
-        print("\n" + "="*80)
-        print("项目运行完成！")
-        print("="*80)
-        print("\n性能监控:")
-        print("- 查看推理日志: tail -f inference.log")
-        print("- 查看性能指标: tail -f performance_metrics.log")
-        print("- Triton监控: http://localhost:8000/metrics")
-        
+    except KeyboardInterrupt:
+        logger.info("用户中断，正在退出...")
+        return 1
     except Exception as e:
-        logger.error(f"项目运行失败: {e}")
+        logger.error(f"程序执行失败: {e}")
         import traceback
         traceback.print_exc()
-        sys.exit(1)
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -21,21 +21,41 @@ wheels/
 *.egg
 MANIFEST
 
-# PyTorch
+# External frameworks (too large for GitHub)
+external/
+external/*
+
+# Generated runtime directories
+models/
+models/*
+data/
+data/*
+logs/
+logs/*
+configs/
+configs/*
+deployment/
+deployment/*
+notebooks/
+notebooks/*
+scripts/
+scripts/*
+
+# Model files and artifacts
 *.pth
 *.pt
 *.ckpt
-
-# ONNX
 *.onnx
-
-# TensorRT
 *.trt
 *.engine
+*.pkl
+*.h5
+*.safetensors
 
-# Logs
+# Logs and outputs
 *.log
-logs/
+opensoure_inference.log
+benchmark_results_*.json
 performance_metrics.log
 inference.log
 
@@ -44,10 +64,12 @@ inference.log
 .pytest_cache/
 .coverage
 htmlcov/
+embedding_cache/
 
-# IDE
+# IDE and development
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -73,36 +95,19 @@ venv.bak/
 # Jupyter Notebook
 .ipynb_checkpoints
 
-# Model files (generated at runtime)
-models/*.onnx
-models/*.trt
-models/*.engine
-
 # Temporary files
 *.tmp
 *.temp
 temp/
 tmp/
 
-# Build artifacts
-kernels/trt_plugin_skeleton/build/
-kernels/trt_plugin_skeleton/lib/
-kernels/trt_plugin_skeleton/bin/
-
-# Triton server logs
-triton_server.log
-triton_client.log
-
-# Performance test results
-bench/results/
-bench/output/
-
-# Embedding cache
-embedding_cache/
-*.pkl
+# Test outputs and results
+test_output/
+benchmark_output/
 
 # Docker
 .dockerignore
+Dockerfile*
 
 # Backup files
 *.bak
