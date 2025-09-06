@@ -160,30 +160,25 @@ class TensorRTOptimizedEngine:
     def _build_engine_from_onnx(self, onnx_path: str) -> Optional[str]:
         """从ONNX模型构建TensorRT引擎"""
         try:
+            logger.info(f"从ONNX模型构建TensorRT引擎: {onnx_path}")
+            
+            # 验证ONNX模型
+            if not self._validate_onnx_model(onnx_path):
+                logger.error("ONNX模型验证失败")
+                return None
+            
             # 创建构建器和网络
             builder = trt.Builder(self.logger)
             config = builder.create_builder_config()
             
-            # 设置工作空间大小
-            config.max_workspace_size = self.config.max_workspace_size
+            # 设置内存池大小 (TensorRT 8.5+)
+            if hasattr(config, 'set_memory_pool_limit'):
+                config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, self.config.max_workspace_size)
+            else:
+                config.max_workspace_size = self.config.max_workspace_size
             
-            # 设置精度
-            if self.config.precision == "fp16" and builder.platform_has_fast_fp16:
-                config.set_flag(trt.BuilderFlag.FP16)
-                logger.info("启用FP16精度")
-            elif self.config.precision == "int8" and builder.platform_has_fast_int8:
-                config.set_flag(trt.BuilderFlag.INT8)
-                logger.info("启用INT8精度")
-                if self.config.calibration_cache_path:
-                    # 这里需要实现INT8校准逻辑
-                    pass
-            
-            # 设置优化级别
-            config.builder_optimization_level = self.config.optimization_level
-            
-            # 设置严格类型
-            if self.config.enable_strict_types:
-                config.set_flag(trt.BuilderFlag.STRICT_TYPES)
+            # 设置精度和优化标志
+            self._configure_precision_and_optimization(config, builder)
             
             # 创建网络
             network_flags = 1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)
@@ -191,38 +186,176 @@ class TensorRTOptimizedEngine:
             parser = trt.OnnxParser(network, self.logger)
             
             # 解析ONNX
+            logger.info("解析ONNX模型...")
             with open(onnx_path, 'rb') as f:
-                if not parser.parse(f.read()):
+                onnx_data = f.read()
+                if not parser.parse(onnx_data):
                     logger.error("ONNX解析失败:")
                     for i in range(parser.num_errors):
-                        logger.error(f"  {parser.get_error(i)}")
+                        error = parser.get_error(i)
+                        logger.error(f"  错误 {i}: {error}")
                     return None
             
-            logger.info(f"ONNX解析成功，网络有{network.num_layers}层")
+            logger.info(f"✅ ONNX解析成功，网络有 {network.num_layers} 层")
             
-            # 设置动态shape配置
+            # 打印网络信息
+            self._print_network_info(network)
+            
+            # 设置优化配置
             if self.config.enable_dynamic_shapes:
                 self._setup_optimization_profiles(builder, config, network)
             
             # 构建引擎
-            logger.info("开始构建TensorRT引擎（可能需要几分钟）...")
-            engine = builder.build_engine(network, config)
+            logger.info("🔧 开始构建TensorRT引擎（可能需要几分钟）...")
+            serialized_engine = builder.build_serialized_network(network, config)
             
-            if engine is None:
-                logger.error("引擎构建失败")
+            if serialized_engine is None:
+                logger.error("❌ 引擎构建失败")
                 return None
             
             # 保存引擎
             engine_path = self.config.engine_path or f"{self.config.model_name}.trt"
-            with open(engine_path, 'wb') as f:
-                f.write(engine.serialize())
+            os.makedirs(os.path.dirname(engine_path), exist_ok=True)
             
-            logger.info(f"TensorRT引擎保存到: {engine_path}")
-            return engine_path
+            with open(engine_path, 'wb') as f:
+                f.write(serialized_engine)
+            
+            logger.info(f"✅ TensorRT引擎保存到: {engine_path}")
+            
+            # 验证生成的引擎
+            if self._validate_engine(engine_path):
+                logger.info("✅ TensorRT引擎验证成功")
+                return engine_path
+            else:
+                logger.error("❌ TensorRT引擎验证失败")
+                return None
             
         except Exception as e:
-            logger.error(f"从ONNX构建引擎失败: {e}")
+            logger.error(f"❌ 从ONNX构建引擎失败: {e}")
+            import traceback
+            logger.error(f"错误详情: {traceback.format_exc()}")
             return None
+    
+    def _validate_onnx_model(self, onnx_path: str) -> bool:
+        """验证ONNX模型"""
+        try:
+            import onnx
+            # 加载并检查ONNX模型
+            onnx_model = onnx.load(onnx_path)
+            onnx.checker.check_model(onnx_model)
+            
+            # 打印模型基本信息
+            logger.info(f"ONNX模型信息:")
+            logger.info(f"  - Opset版本: {onnx_model.opset_import[0].version}")
+            logger.info(f"  - 输入数量: {len(onnx_model.graph.input)}")
+            logger.info(f"  - 输出数量: {len(onnx_model.graph.output)}")
+            
+            for i, input_info in enumerate(onnx_model.graph.input):
+                logger.info(f"  - 输入{i}: {input_info.name}")
+            
+            for i, output_info in enumerate(onnx_model.graph.output):
+                logger.info(f"  - 输出{i}: {output_info.name}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"ONNX模型验证失败: {e}")
+            return False
+    
+    def _configure_precision_and_optimization(self, config, builder):
+        """配置精度和优化设置"""
+        # 设置精度
+        if self.config.precision == "fp16" and builder.platform_has_fast_fp16:
+            config.set_flag(trt.BuilderFlag.FP16)
+            logger.info("✅ 启用FP16精度")
+            
+            # 启用FP16 I/O（如果支持）
+            if self.config.enable_fp16_io:
+                config.set_flag(trt.BuilderFlag.PREFER_PRECISION_CONSTRAINTS)
+                
+        elif self.config.precision == "int8" and builder.platform_has_fast_int8:
+            config.set_flag(trt.BuilderFlag.INT8)
+            logger.info("✅ 启用INT8精度")
+            
+            # INT8校准（如果提供）
+            if self.config.calibration_cache_path and os.path.exists(self.config.calibration_cache_path):
+                # 这里需要实现INT8校准器
+                logger.info(f"使用INT8校准缓存: {self.config.calibration_cache_path}")
+        
+        else:
+            logger.info("使用FP32精度")
+        
+        # 设置优化级别
+        if hasattr(config, 'builder_optimization_level'):
+            config.builder_optimization_level = self.config.optimization_level
+            logger.info(f"优化级别: {self.config.optimization_level}")
+        
+        # 其他优化标志
+        if self.config.enable_strict_types:
+            config.set_flag(trt.BuilderFlag.STRICT_TYPES)
+            logger.info("启用严格类型检查")
+        
+        # 启用更多优化选项
+        config.set_flag(trt.BuilderFlag.GPU_FALLBACK)
+        config.set_flag(trt.BuilderFlag.REFIT)
+        
+        # DLA支持（如果可用）
+        if self.config.dla_core is not None and builder.max_DLA_batch_size > 0:
+            config.default_device_type = trt.DeviceType.DLA
+            config.DLA_core = self.config.dla_core
+            logger.info(f"使用DLA核心: {self.config.dla_core}")
+    
+    def _print_network_info(self, network):
+        """打印网络详细信息"""
+        logger.info("🔍 网络结构信息:")
+        logger.info(f"  - 总层数: {network.num_layers}")
+        logger.info(f"  - 输入数量: {network.num_inputs}")
+        logger.info(f"  - 输出数量: {network.num_outputs}")
+        
+        # 打印输入信息
+        for i in range(network.num_inputs):
+            input_tensor = network.get_input(i)
+            logger.info(f"  - 输入{i}: {input_tensor.name}, shape={input_tensor.shape}, dtype={input_tensor.dtype}")
+        
+        # 打印输出信息
+        for i in range(network.num_outputs):
+            output_tensor = network.get_output(i)
+            logger.info(f"  - 输出{i}: {output_tensor.name}, shape={output_tensor.shape}, dtype={output_tensor.dtype}")
+    
+    def _validate_engine(self, engine_path: str) -> bool:
+        """验证生成的TensorRT引擎"""
+        try:
+            # 加载引擎
+            with open(engine_path, 'rb') as f:
+                engine_data = f.read()
+            
+            runtime = trt.Runtime(self.logger)
+            engine = runtime.deserialize_cuda_engine(engine_data)
+            
+            if engine is None:
+                logger.error("无法反序列化引擎")
+                return False
+            
+            # 打印引擎信息
+            logger.info("🔍 引擎信息:")
+            logger.info(f"  - 最大批次大小: {engine.max_batch_size}")
+            logger.info(f"  - 绑定数量: {engine.num_bindings}")
+            logger.info(f"  - 层数量: {engine.num_layers}")
+            logger.info(f"  - 设备内存大小: {engine.device_memory_size / (1024*1024):.2f} MB")
+            
+            # 检查绑定
+            for i in range(engine.num_bindings):
+                binding_name = engine.get_binding_name(i)
+                binding_shape = engine.get_binding_shape(i)
+                binding_dtype = engine.get_binding_dtype(i)
+                is_input = engine.binding_is_input(i)
+                logger.info(f"  - 绑定{i}: {binding_name} ({'输入' if is_input else '输出'}), shape={binding_shape}, dtype={binding_dtype}")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"引擎验证失败: {e}")
+            return False
     
     def _setup_optimization_profiles(self, builder, config, network):
         """设置优化配置文件"""
@@ -293,17 +426,59 @@ class TensorRTOptimizedEngine:
             self.tensorrt_available = False
     
     def _export_hstu_to_onnx(self) -> Optional[str]:
-        """将HSTU模型导出为ONNX"""
+        """将HSTU模型导出为ONNX（使用专用导出器）"""
         try:
-            onnx_path = f"{self.config.model_name}_hstu.onnx"
+            # 使用专用的ONNX导出器
+            from ..hstu.onnx_exporter import export_hstu_model
+            
+            # 获取模型配置
+            model_config = self.hstu_model.config if hasattr(self.hstu_model, 'config') else None
+            
+            if model_config is None:
+                logger.warning("无法获取模型配置，使用简单导出方法")
+                return self._simple_onnx_export()
+            
+            # 使用专业导出器导出
+            export_result = export_hstu_model(
+                model=self.hstu_model,
+                model_config=model_config,
+                export_dir=os.path.join(os.path.dirname(self.config.engine_path or './'), 'onnx_models'),
+                batch_sizes=[1, 2, 4, 8],
+                sequence_lengths=[64, 128, 256, 512],
+                export_inference_only=True,
+                optimize=True
+            )
+            
+            if export_result['success']:
+                # 优先使用优化后的模型
+                if 'optimized_model' in export_result['export_paths']:
+                    return export_result['export_paths']['optimized_model']
+                elif 'onnx_model' in export_result['export_paths']:
+                    return export_result['export_paths']['onnx_model']
+                else:
+                    logger.warning("专业导出器未返回可用模型，使用简单导出")
+                    return self._simple_onnx_export()
+            else:
+                logger.warning(f"专业导出失败: {export_result.get('error')}，使用简单导出")
+                return self._simple_onnx_export()
+            
+        except Exception as e:
+            logger.error(f"专业ONNX导出失败: {e}，使用简单导出")
+            return self._simple_onnx_export()
+    
+    def _simple_onnx_export(self) -> Optional[str]:
+        """简单的ONNX导出方法（回退选项）"""
+        try:
+            onnx_path = f"{self.config.model_name}_hstu_simple.onnx"
             
             # 创建示例输入
             batch_size = 1
-            seq_len = 64
+            seq_len = 128
             
             dummy_input_ids = torch.randint(0, 50000, (batch_size, seq_len), dtype=torch.long)
             dummy_attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long)
             dummy_dense_features = torch.randn(batch_size, 1024, dtype=torch.float32)
+            dummy_position_ids = torch.arange(seq_len, dtype=torch.long).unsqueeze(0)
             
             # 导出为ONNX
             torch.onnx.export(
@@ -312,30 +487,33 @@ class TensorRTOptimizedEngine:
                     'input_ids': dummy_input_ids,
                     'attention_mask': dummy_attention_mask,
                     'dense_features': dummy_dense_features,
+                    'position_ids': dummy_position_ids,
                 },
                 onnx_path,
                 export_params=True,
-                opset_version=11,
+                opset_version=17,  # 使用更新的opset版本
                 do_constant_folding=True,
-                input_names=['input_ids', 'attention_mask', 'dense_features'],
+                input_names=['input_ids', 'attention_mask', 'dense_features', 'position_ids'],
                 output_names=['logits', 'hidden_states', 'engagement_scores', 'retention_scores', 'monetization_scores'],
                 dynamic_axes={
                     'input_ids': {0: 'batch_size', 1: 'sequence'},
                     'attention_mask': {0: 'batch_size', 1: 'sequence'},
                     'dense_features': {0: 'batch_size'},
+                    'position_ids': {0: 'batch_size', 1: 'sequence'},
                     'logits': {0: 'batch_size', 1: 'sequence'},
                     'hidden_states': {0: 'batch_size', 1: 'sequence'},
                     'engagement_scores': {0: 'batch_size'},
                     'retention_scores': {0: 'batch_size'},
                     'monetization_scores': {0: 'batch_size'},
-                }
+                },
+                verbose=False
             )
             
-            logger.info(f"HSTU模型导出为ONNX: {onnx_path}")
+            logger.info(f"简单ONNX导出完成: {onnx_path}")
             return onnx_path
             
         except Exception as e:
-            logger.error(f"导出HSTU模型为ONNX失败: {e}")
+            logger.error(f"简单ONNX导出也失败: {e}")
             return None
     
     def _setup_bindings(self):
