@@ -8,8 +8,6 @@
 - TensorRT GPU推理加速
 - 自定义Triton和CUTLASS算子优化
 - 智能GPU热缓存系统
-
-不再使用手写的模拟实现，而是基于真正的开源技术栈。
 """
 
 import sys
@@ -121,6 +119,30 @@ def create_optimized_config():
             'fusion_threshold': 32,       # 算子融合阈值
         },
         
+        # Triton算子配置
+        'triton_operators': {
+            'enable_fused_attention_layernorm': True,    # 启用融合注意力+LayerNorm
+            'enable_hierarchical_sequence_fusion': True, # 启用分层序列融合
+            'enable_hstu_hierarchical_attention': True,  # 启用HSTU分层注意力
+            'enable_sequence_recommendation_interaction': True,  # 启用序列推荐交互
+            'enable_interaction_operator': True,         # 启用交互算子
+            'benchmark_mode': False,                     # 基准测试模式
+        },
+        
+        # 分层序列融合配置
+        'hierarchical_fusion': {
+            'fusion_levels': [2, 4, 8],                  # 融合层级
+            'attention_heads': 16,                     # 注意力头数
+            'dropout': 0.1,                            # dropout率
+        },
+        
+        # 序列推荐交互配置
+        'sequence_interaction': {
+            'max_sequence_length': 100,                # 最大序列长度
+            'interaction_dim': 256,                    # 交互维度
+            'temperature': 0.1,                      # 温度参数
+        },
+        
         # 智能GPU热缓存配置
         'intelligent_cache': {
             'gpu_cache_size': 8192,       # GPU缓存大小
@@ -131,14 +153,15 @@ def create_optimized_config():
             'decay_factor': 0.95,         # 衰减因子
         },
         
-        # 推理策略配置
-        'inference_strategy': {
-            'auto_selection': True,       # 自动策略选择
-            'vllm_sequence_threshold': 100,    # VLLM序列长度阈值
-            'tensorrt_sequence_threshold': 50, # TensorRT序列长度阈值
-            'fallback_strategy': 'hstu',  # 回退策略
-            'enable_batching': True,      # 启用批处理
-            'batch_timeout_ms': 50,       # 批处理超时
+        # 统一推理管道配置
+        'unified_pipeline': {
+            'enable_onnx_export': True,    # 启用ONNX导出
+            'onnx_opset_version': 11,     # ONNX算子集版本
+            'enable_tensorrt_optimization': True,  # 启用TensorRT优化
+            'enable_vllm_service': True,   # 启用VLLM推理服务
+            'pipeline_timeout_ms': 5000,   # 管道超时时间
+            'enable_batching': True,       # 启用批处理
+            'batch_timeout_ms': 50,        # 批处理超时
         },
         
         # 性能监控配置

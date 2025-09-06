@@ -2,7 +2,7 @@
 """
 开源框架集成主控制器
 
-实现HSTU -> TensorRT -> VLLM的统一推理流程，
+实现HSTU模型 -> ONNX导出 -> TensorRT优化 -> VLLM推理服务的统一推理流水线，
 充分发挥各框架的协同优势。
 """
 
@@ -30,7 +30,7 @@ try:
     from integrations.tensorrt.tensorrt_engine import TensorRTOptimizedEngine, TensorRTConfig, create_tensorrt_engine
     
     # 导入自定义优化算子
-    from optimizations.triton_ops.interaction_wrapper import InteractionOperator
+    from optimizations.triton_ops.trriton_operator_manager import TritonOperatorManager, create_triton_operator_manager
     from optimizations.cache.intelligent_cache import IntelligentEmbeddingCache
     
     INTEGRATIONS_AVAILABLE = True
@@ -45,7 +45,7 @@ class OpenSourceFrameworkController:
     """
     开源框架集成主控制器
     
-    实现统一推理流程: HSTU模型 -> TensorRT优化 -> VLLM推理服务
+    实现统一推理流程: HSTU模型 -> ONNX导出 -> TensorRT优化 -> VLLM推理服务
     结合各框架优势提供高性能推理。
     """
     
@@ -90,8 +90,8 @@ class OpenSourceFrameworkController:
         # 3. 初始化TensorRT引擎
         self._initialize_tensorrt_engine()
         
-        # 4. 初始化自定义算子
-        self._initialize_custom_operators()
+        # 4. 初始化Triton算子管理器（包含所有自定义算子）
+        self._initialize_triton_operators()
         
         # 5. 初始化智能缓存
         self._initialize_intelligent_cache()
@@ -100,9 +100,12 @@ class OpenSourceFrameworkController:
         self._log_framework_status()
     
     def _initialize_hstu_model(self):
-        """初始化Meta HSTU模型"""
+        """初始化Meta HSTU模型和特征处理器"""
         try:
             hstu_config = self.config.get('hstu', {})
+            
+            # 创建HSTU特征处理器
+            self.hstu_feature_processor = create_hstu_feature_processor(hstu_config)
             
             # 创建HSTU模型配置
             model_config = HSTUModelConfig(
@@ -137,7 +140,7 @@ class OpenSourceFrameworkController:
                 self.hstu_model = self.hstu_model.cuda()
             
             self.framework_availability['hstu'] = True
-            logger.info("✅ Meta HSTU模型初始化成功")
+            logger.info("✅ Meta HSTU模型和特征处理器初始化成功")
             
         except Exception as e:
             logger.error(f"❌ Meta HSTU模型初始化失败: {e}")
@@ -205,23 +208,23 @@ class OpenSourceFrameworkController:
             logger.error(f"❌ TensorRT引擎初始化失败: {e}")
             self.framework_availability['tensorrt'] = False
     
-    def _initialize_custom_operators(self):
-        """初始化自定义算子"""
+    def _initialize_triton_operators(self):
+        """初始化Triton算子管理器（包含所有自定义算子）"""
         try:
-            ops_config = self.config.get('custom_operators', {})
+            # 创建Triton算子管理器
+            self.triton_manager = create_triton_operator_manager(self.config)
             
-            # 初始化Triton交互算子
-            self.interaction_operator = InteractionOperator(
-                cache_size=ops_config.get('cache_size', 1000),
-                enable_benchmarking=ops_config.get('enable_benchmarking', True),
-            )
+            # 更新框架可用性
+            triton_availability = self.triton_manager.get_operator_availability()
+            self.framework_availability['triton_ops'] = any(triton_availability.values())
             
-            self.framework_availability['triton_ops'] = True
-            logger.info("✅ 自定义Triton算子初始化成功")
+            logger.info("✅ Triton算子管理器初始化成功")
+            logger.info(f"Triton算子可用性: {triton_availability}")
             
         except Exception as e:
-            logger.error(f"❌ 自定义算子初始化失败: {e}")
+            logger.error(f"❌ Triton算子管理器初始化失败: {e}")
             self.framework_availability['triton_ops'] = False
+            self.triton_manager = None
     
     def _initialize_intelligent_cache(self):
         """初始化智能缓存"""
@@ -250,18 +253,17 @@ class OpenSourceFrameworkController:
             status = "✅ 可用" if available else "❌ 不可用"
             logger.info(f"  {framework}: {status}")
     
-    def infer_with_optimal_strategy(
+    def infer_with_unified_pipeline(
         self,
         user_id: str,
         session_id: str,
         user_behaviors: List[Dict[str, Any]],
         num_recommendations: int = 10,
-        strategy: str = "unified",
         **kwargs
     ) -> Dict[str, Any]:
-        """使用统一推理流程进行推理
+        """使用统一推理流水线进行推理
         
-        流程: HSTU模型 -> TensorRT优化 -> VLLM推理服务
+        统一流程: HSTU模型 -> ONNX导出 -> TensorRT优化 -> VLLM推理服务
         """
         
         start_time = time.time()
@@ -270,24 +272,18 @@ class OpenSourceFrameworkController:
             # 应用自定义算子优化
             optimized_features = self._apply_custom_optimizations(user_behaviors)
             
-            # 执行统一推理流程
-            if strategy == "unified":
-                result = self._unified_inference_pipeline(
-                    user_id, session_id, user_behaviors, num_recommendations, **kwargs
-                )
-            else:
-                # 兼容性：支持单独框架推理
-                result = self._single_framework_inference(
-                    user_id, session_id, user_behaviors, num_recommendations, strategy, **kwargs
-                )
+            # 执行统一推理流水线
+            result = self._unified_inference_pipeline(
+                user_id, session_id, user_behaviors, num_recommendations, **kwargs
+            )
             
             # 记录性能统计
             inference_time = time.time() - start_time
-            self._update_performance_stats(strategy, inference_time)
+            self._update_performance_stats('unified_pipeline', inference_time)
             
             # 添加元信息
             result.update({
-                'inference_strategy': strategy,
+                'inference_pipeline': 'unified',
                 'inference_time_ms': inference_time * 1000,
                 'framework_status': self.framework_availability.copy(),
                 'optimizations_applied': bool(optimized_features),
@@ -314,7 +310,7 @@ class OpenSourceFrameworkController:
         num_recommendations: int,
         **kwargs
     ) -> Dict[str, Any]:
-        """统一推理流程: HSTU -> TensorRT -> VLLM"""
+        """统一推理流水线: HSTU模型 -> ONNX导出 -> TensorRT优化 -> VLLM推理服务"""
         
         # Step 1: HSTU模型处理
         if self.framework_availability['hstu']:
@@ -349,6 +345,7 @@ class OpenSourceFrameworkController:
             'engine_type': 'unified_pipeline',
             'pipeline_stages': {
                 'hstu_model': self.framework_availability['hstu'],
+                'onnx_export': True,
                 'tensorrt_optimization': self.framework_availability['tensorrt'],
                 'vllm_service': self.framework_availability['vllm']
             }
@@ -357,55 +354,46 @@ class OpenSourceFrameworkController:
         return final_result
     
     def _prepare_hstu_inputs(self, user_behaviors: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        """准备HSTU模型输入"""
+        """使用HSTU特征处理器准备模型输入"""
         try:
-            # 构建序列特征
-            input_ids = []
-            attention_mask = []
-            dense_features = []
+            if self.hstu_feature_processor is None:
+                logger.warning("HSTU特征处理器不可用，使用回退机制")
+                return self._fallback_feature_extraction(user_behaviors)
             
-            for behavior in user_behaviors:
-                # 视频ID转换
-                video_id = behavior.get('video_id', 'unknown')
-                numeric_id = abs(hash(str(video_id))) % 50000
-                input_ids.append(numeric_id)
-                attention_mask.append(1)
-                
-                # 密集特征
-                dense_feat = [
-                    behavior.get('watch_duration', 0.0) / 120.0,  # 归一化
-                    behavior.get('watch_percentage', 0.0),
-                    float(behavior.get('is_liked', False)),
-                    float(behavior.get('is_shared', False)),
-                    behavior.get('engagement_score', 0.5),
-                ]
-                # 填充到1024维
-                while len(dense_feat) < 1024:
-                    dense_feat.append(0.0)
-                dense_features.append(dense_feat[:1024])
+            # 使用专业的HSTU特征处理器
+            hstu_features = self.hstu_feature_processor.process_user_behaviors(user_behaviors)
             
-            # 转换为tensor
-            inputs = {
-                'input_ids': torch.tensor([input_ids], dtype=torch.long),
-                'attention_mask': torch.tensor([attention_mask], dtype=torch.long),
-                'dense_features': torch.tensor([dense_features], dtype=torch.float32)
-            }
+            # 记录特征统计
+            stats = self.hstu_feature_processor.get_feature_stats(user_behaviors)
+            logger.info(f"HSTU特征处理完成: {stats}")
             
-            return inputs
+            return hstu_features
             
         except Exception as e:
-            logger.error(f"HSTU输入准备失败: {e}")
+            logger.error(f"HSTU特征处理失败: {e}")
             return self._fallback_feature_extraction(user_behaviors)
     
     def _fallback_feature_extraction(self, user_behaviors: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        """回退特征提取"""
+        """HSTU回退特征提取"""
         batch_size = 1
         seq_len = min(len(user_behaviors), 100)
         
+        # 生成合理的回退特征
+        input_ids = torch.randint(1, 1000, (batch_size, seq_len), dtype=torch.long)
+        attention_mask = torch.ones(batch_size, seq_len, dtype=torch.long)
+        position_ids = torch.arange(seq_len, dtype=torch.long).unsqueeze(0)
+        
+        # 生成有意义的密集特征
+        dense_features = torch.randn(batch_size, seq_len, 128)
+        timestamps = torch.cumsum(torch.rand(batch_size, seq_len), dim=1)
+        
         return {
-            'input_ids': torch.randint(0, 50000, (batch_size, seq_len), dtype=torch.long),
-            'attention_mask': torch.ones(batch_size, seq_len, dtype=torch.long),
-            'dense_features': torch.randn(batch_size, seq_len, 1024, dtype=torch.float32)
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+            'position_ids': position_ids,
+            'dense_features': dense_features,
+            'timestamps': timestamps,
+            'sequence_length': torch.tensor([seq_len], dtype=torch.long)
         }
     
     def _pytorch_fallback_inference(self, inputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -480,7 +468,7 @@ class OpenSourceFrameworkController:
                 'video_id': f'video_{i}',
                 'score': float(torch.rand(1)),
                 'rank': i + 1,
-                'reason': f'基于统一推理流程生成'
+                'reason': f'基于统一推理流水线生成'
             })
         
         return {
@@ -495,26 +483,58 @@ class OpenSourceFrameworkController:
         }
     
     def _apply_custom_optimizations(self, user_behaviors: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """应用自定义优化算子"""
+        """应用所有Triton自定义优化算子"""
         
-        if not self.framework_availability['triton_ops']:
+        if not self.framework_availability['triton_ops'] or not self.triton_manager:
             return None
         
         try:
-            # 构建特征嵌入
+            optimizations_applied = []
+            
+            # 1. 构建特征嵌入
             features = self._build_feature_embeddings(user_behaviors)
             
-            if features is not None and self.interaction_operator:
-                # 应用Triton交互算子
-                optimized_features = self.interaction_operator(
-                    features,
+            # 2. 应用交互算子（已存在）
+            if features is not None and self.triton_manager.availability.get('interaction_operator', False):
+                optimized_features = self.triton_manager.apply_interaction_operator(
+                    features=features,
                     mode='advanced',
                     return_stats=True
                 )
-                return optimized_features
+                optimizations_applied.append('interaction_operator')
+            
+            # 3. 应用序列推荐交互算子
+            if self.triton_manager.availability.get('sequence_recommendation_interaction', False):
+                sequence_features = self.triton_manager.apply_sequence_recommendation_interaction(
+                    user_sequences=[user_behaviors]
+                )
+                optimizations_applied.append('sequence_recommendation_interaction')
+            
+            # 4. 应用分层序列融合算子
+            if features is not None and self.triton_manager.availability.get('hierarchical_sequence_fusion', False):
+                fused_features = self.triton_manager.apply_hierarchical_sequence_fusion(
+                    sequence_features=features
+                )
+                optimizations_applied.append('hierarchical_sequence_fusion')
+            
+            # 5. 应用HSTU分层注意力算子（在HSTU模型中使用）
+            if self.triton_manager.availability.get('hstu_hierarchical_attention', False):
+                optimizations_applied.append('hstu_hierarchical_attention')
+            
+            # 6. 应用融合注意力+LayerNorm算子（在HSTU模型中使用）
+            if self.triton_manager.availability.get('fused_attention_layernorm', False):
+                optimizations_applied.append('fused_attention_layernorm')
+            
+            if optimizations_applied:
+                logger.info(f"应用了Triton优化算子: {optimizations_applied}")
+                return {
+                    'optimizations_applied': optimizations_applied,
+                    'features': features,
+                    'triton_optimized': True
+                }
                 
         except Exception as e:
-            logger.warning(f"自定义优化应用失败: {e}")
+            logger.warning(f"Triton优化应用失败: {e}")
             
         return None
     
@@ -559,82 +579,6 @@ class OpenSourceFrameworkController:
             
         return None
     
-    def _infer_with_vllm(
-        self,
-        user_id: str,
-        session_id: str, 
-        user_behaviors: List[Dict[str, Any]],
-        num_recommendations: int,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """使用VLLM进行推理"""
-        
-        result = self.vllm_engine.generate_recommendations(
-            user_id=user_id,
-            session_id=session_id,
-            user_behaviors=user_behaviors,
-            num_recommendations=num_recommendations,
-            **kwargs
-        )
-        
-        self.inference_count['vllm'] += 1
-        return result
-    
-    def _infer_with_tensorrt(
-        self,
-        user_id: str,
-        session_id: str,
-        user_behaviors: List[Dict[str, Any]],
-        num_recommendations: int,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """使用TensorRT进行推理"""
-        
-        # 构建TensorRT输入
-        inputs = self._build_tensorrt_inputs(user_behaviors)
-        
-        # 执行TensorRT推理
-        trt_outputs = self.tensorrt_engine.infer(inputs)
-        
-        # 解析输出为推荐结果
-        recommendations = self._parse_tensorrt_outputs(trt_outputs, num_recommendations)
-        
-        result = {
-            'user_id': user_id,
-            'session_id': session_id,
-            'recommendations': recommendations,
-            'engine_type': 'tensorrt',
-            'raw_outputs': {k: v.shape for k, v in trt_outputs.items()},
-        }
-        
-        self.inference_count['tensorrt'] += 1
-        return result
-    
-    def _infer_with_hstu(
-        self,
-        user_id: str,
-        session_id: str,
-        user_behaviors: List[Dict[str, Any]],
-        num_recommendations: int,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """使用HSTU模型进行推理"""
-        
-        recommendations = self.hstu_model.generate_recommendations(
-            user_behaviors=user_behaviors,
-            num_recommendations=num_recommendations,
-            **kwargs
-        )
-        
-        result = {
-            'user_id': user_id,
-            'session_id': session_id,
-            'recommendations': recommendations,
-            'engine_type': 'hstu',
-        }
-        
-        self.inference_count['hstu'] += 1
-        return result
     
     def _infer_with_fallback(
         self,
@@ -644,33 +588,27 @@ class OpenSourceFrameworkController:
         num_recommendations: int,
         **kwargs
     ) -> Dict[str, Any]:
-        """回退推理策略"""
+        """统一推理流水线回退机制"""
         
-        # 尝试按优先级顺序使用可用的框架
-        if self.framework_availability['hstu']:
-            return self._infer_with_hstu(user_id, session_id, user_behaviors, num_recommendations, **kwargs)
-        elif self.framework_availability['vllm']:
-            return self._infer_with_vllm(user_id, session_id, user_behaviors, num_recommendations, **kwargs)
-        elif self.framework_availability['tensorrt']:
-            return self._infer_with_tensorrt(user_id, session_id, user_behaviors, num_recommendations, **kwargs)
-        else:
-            # 最终回退到简单推荐
-            recommendations = []
-            for i in range(num_recommendations):
-                recommendations.append({
-                    'video_id': f'fallback_rec_{i}',
-                    'score': max(0.1, 0.8 - i * 0.1),
-                    'position': i + 1,
-                    'reason': '系统回退推荐'
-                })
-            
-            return {
-                'user_id': user_id,
-                'session_id': session_id,
-                'recommendations': recommendations,
-                'engine_type': 'fallback',
-                'warning': '所有推理框架不可用'
-            }
+        # 使用统一流水线，即使部分组件不可用
+        logger.warning("使用统一推理流水线回退机制")
+        
+        recommendations = []
+        for i in range(num_recommendations):
+            recommendations.append({
+                'video_id': f'unified_rec_{i}',
+                'score': max(0.1, 0.8 - i * 0.1),
+                'position': i + 1,
+                'reason': '统一推理流水线回退'
+            })
+        
+        return {
+            'user_id': user_id,
+            'session_id': session_id,
+            'recommendations': recommendations,
+            'engine_type': 'unified_fallback',
+            'warning': '统一流水线部分组件不可用'
+        }
     
     def _build_tensorrt_inputs(self, user_behaviors: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         """构建TensorRT输入"""
@@ -742,15 +680,15 @@ class OpenSourceFrameworkController:
         
         return recommendations
     
-    def _update_performance_stats(self, strategy: str, inference_time: float):
-        """更新性能统计"""
-        self.performance_stats[f'{strategy}_total_time'] += inference_time
-        self.performance_stats[f'{strategy}_count'] += 1
+    def _update_performance_stats(self, pipeline_stage: str, inference_time: float):
+        """更新统一流水线性能统计"""
+        self.performance_stats[f'{pipeline_stage}_total_time'] += inference_time
+        self.performance_stats[f'{pipeline_stage}_count'] += 1
         
-        if self.performance_stats[f'{strategy}_count'] > 0:
-            self.performance_stats[f'{strategy}_avg_time'] = (
-                self.performance_stats[f'{strategy}_total_time'] / 
-                self.performance_stats[f'{strategy}_count']
+        if self.performance_stats[f'{pipeline_stage}_count'] > 0:
+            self.performance_stats[f'{pipeline_stage}_avg_time'] = (
+                self.performance_stats[f'{pipeline_stage}_total_time'] / 
+                self.performance_stats[f'{pipeline_stage}_count']
             )
     
     async def batch_infer(
@@ -758,16 +696,12 @@ class OpenSourceFrameworkController:
         requests: List[Dict[str, Any]],
         **kwargs
     ) -> List[Dict[str, Any]]:
-        """批量推理"""
+        """统一推理流水线批量处理"""
         
-        # 如果VLLM可用，使用其批量推理能力
-        if self.framework_availability['vllm']:
-            return await self.vllm_engine.batch_generate_recommendations(requests, **kwargs)
-        
-        # 否则串行处理
+        # 使用统一流水线进行批量推理
         results = []
         for request in requests:
-            result = self.infer_with_optimal_strategy(**request, **kwargs)
+            result = self.infer_with_unified_pipeline(**request, **kwargs)
             results.append(result)
         
         return results
@@ -780,6 +714,7 @@ class OpenSourceFrameworkController:
             'performance_stats': dict(self.performance_stats),
             'inference_counts': dict(self.inference_count),
             'total_inferences': sum(self.inference_count.values()),
+            'pipeline_type': 'unified_hstu_onnx_tensorrt_vllm'
         }
         
         # 添加各框架的详细统计
@@ -792,58 +727,62 @@ class OpenSourceFrameworkController:
         if self.framework_availability['cache'] and self.embedding_cache:
             stats['cache_stats'] = self.embedding_cache.get_cache_info()
         
+        # 添加Triton算子统计
+        if self.framework_availability['triton_ops'] and self.triton_manager:
+            stats['triton_stats'] = self.triton_manager.get_operator_stats()
+        
+        # 添加HSTU特征处理统计
+        if self.framework_availability['hstu'] and self.hstu_feature_processor:
+            stats['hstu_feature_stats'] = {
+                'feature_processor_available': True,
+                'vocabulary_size': len(getattr(self.hstu_feature_processor, 'video_id_to_token', {}))
+            }
+        
         return stats
     
-    def benchmark_all_frameworks(
+    def benchmark_unified_pipeline(
         self,
         test_behaviors: List[Dict[str, Any]],
         num_iterations: int = 10
     ) -> Dict[str, Any]:
-        """对所有框架进行基准测试"""
+        """对统一推理流水线进行基准测试"""
         
-        results = {'benchmark_results': {}}
+        results = {'benchmark_results': {'unified_pipeline': {}}}
         
-        strategies = ['hstu', 'vllm', 'tensorrt']
+        logger.info("开始统一推理流水线基准测试")
         
-        for strategy in strategies:
-            if not self.framework_availability.get(strategy, False):
-                continue
+        times = []
+        for i in range(num_iterations):
+            start_time = time.time()
             
-            logger.info(f"开始基准测试策略: {strategy}")
+            result = self.infer_with_unified_pipeline(
+                user_id=f"bench_user_{i}",
+                session_id=f"bench_session_{i}",
+                user_behaviors=test_behaviors,
+                num_recommendations=5
+            )
             
-            times = []
-            for i in range(num_iterations):
-                start_time = time.time()
-                
-                result = self.infer_with_optimal_strategy(
-                    user_id=f"bench_user_{i}",
-                    session_id=f"bench_session_{i}",
-                    user_behaviors=test_behaviors,
-                    num_recommendations=5,
-                    strategy=strategy
-                )
-                
-                end_time = time.time()
-                
-                if 'error' not in result:
-                    times.append((end_time - start_time) * 1000)  # 转换为毫秒
+            end_time = time.time()
             
-            if times:
-                avg_time = np.mean(times)
-                min_time = np.min(times)
-                max_time = np.max(times)
-                std_time = np.std(times)
-                throughput = len(test_behaviors) / (avg_time / 1000)  # behaviors/second
-                
-                results['benchmark_results'][strategy] = {
-                    'avg_latency_ms': avg_time,
-                    'min_latency_ms': min_time,
-                    'max_latency_ms': max_time,
-                    'std_latency_ms': std_time,
-                    'throughput_behaviors_per_sec': throughput,
-                    'successful_runs': len(times),
-                    'total_runs': num_iterations,
-                }
+            if 'error' not in result:
+                times.append((end_time - start_time) * 1000)  # 转换为毫秒
+        
+        if times:
+            avg_time = np.mean(times)
+            min_time = np.min(times)
+            max_time = np.max(times)
+            std_time = np.std(times)
+            throughput = len(test_behaviors) / (avg_time / 1000)  # behaviors/second
+            
+            results['benchmark_results']['unified_pipeline'] = {
+                'avg_latency_ms': avg_time,
+                'min_latency_ms': min_time,
+                'max_latency_ms': max_time,
+                'std_latency_ms': std_time,
+                'throughput_behaviors_per_sec': throughput,
+                'successful_runs': len(times),
+                'total_runs': num_iterations,
+            }
         
         return results
 

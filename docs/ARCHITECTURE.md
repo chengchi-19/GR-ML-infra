@@ -56,26 +56,15 @@ tests/                      # 测试套件
 
 ## 🔄 推理流程架构
 
-### 智能策略选择算法
+### 统一推理管道
 ```python
-def _select_optimal_strategy(self, user_behaviors):
-    sequence_length = len(user_behaviors)
-    
-    # 长序列 -> VLLM (PagedAttention优势)
-    if sequence_length > 100 and self.vllm_available:
-        return "vllm"
-    
-    # 短序列 -> TensorRT (低延迟优势)  
-    elif sequence_length < 50 and self.tensorrt_available:
-        return "tensorrt"
-    
-    # 中等序列 -> HSTU (平衡性能)
-    elif self.hstu_available:
-        return "hstu"
-    
-    # 智能回退
-    else:
-        return "fallback"
+def _unified_inference_pipeline(self, user_behaviors):
+    # 统一流程: HSTU -> ONNX -> TensorRT -> VLLM
+    hstu_outputs = self.hstu_model.extract_features(user_behaviors)
+    onnx_model = self.export_to_onnx(hstu_outputs)
+    tensorrt_engine = self.build_tensorrt_engine(onnx_model)
+    vllm_results = self.vllm_service.infer(tensorrt_engine)
+    return vllm_results
 ```
 
 ### 执行流程图
@@ -84,9 +73,7 @@ def _select_optimal_strategy(self, user_behaviors):
     ↓
 特征预处理
     ↓
-智能策略选择 ——→ [VLLM引擎] ——→ PagedAttention优化
-    ↓             [TensorRT] ——→ GPU加速推理
-    ↓             [HSTU直接] ——→ 轻量化推理
+HSTU模型特征提取 ——→ ONNX格式导出 ——→ TensorRT优化 ——→ VLLM推理服务
     ↓
 结果后处理
     ↓  
@@ -108,7 +95,7 @@ def _select_optimal_strategy(self, user_behaviors):
 ### 3. 调度优化
 - **Continuous Batching**: VLLM动态批处理
 - **异步推理**: 并发处理多个请求
-- **负载均衡**: 多框架间智能分配
+- **端到端优化**: 统一管道的完整优化链路
 
 ## 🔧 扩展性设计
 
@@ -116,7 +103,7 @@ def _select_optimal_strategy(self, user_behaviors):
 1. 在`integrations/`目录下创建新框架目录
 2. 实现标准接口: `infer()`, `batch_infer()`, `get_availability()`
 3. 在`framework_controller.py`中注册新框架
-4. 更新策略选择逻辑
+4. 集成到统一推理管道
 
 ### 新算子添加
 1. 在`optimizations/`对应目录下实现算子
@@ -150,10 +137,10 @@ def _select_optimal_strategy(self, user_behaviors):
 
 ## 🔒 容错设计
 
-### 多级回退机制
-1. **框架级回退**: 框架不可用时自动切换
-2. **算子级回退**: 自定义算子失败时使用标准实现
-3. **模型级回退**: 模型加载失败时使用简化版本
+### 统一管道可靠性
+1. **模型级回退**: ONNX导出失败时使用PyTorch
+2. **引擎级回退**: TensorRT构建失败时使用ONNX Runtime
+3. **服务级回退**: VLLM不可用时使用标准推理
 
 ### 错误恢复
 - 智能重试机制

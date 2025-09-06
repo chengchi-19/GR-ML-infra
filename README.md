@@ -19,10 +19,10 @@
 - ✅ **自定义算子**: Triton DSL和CUTLASS高性能算子
 
 ### 🧠 统一推理流程
-- 🔄 **HSTU模型**: 负责特征提取和序列建模  
+- 🔄 **HSTU模型**: 负责特征提取和序列建模
+- 📤 **ONNX导出**: 将HSTU模型导出为标准ONNX格式
 - ⚡ **TensorRT优化**: GPU加速推理，模型优化
 - 🎯 **VLLM推理服务**: 内存管理和推理服务优化
-- 📊 **多级回退**: 智能回退机制确保服务可用性
 
 ## 🚀 快速开始
 
@@ -36,7 +36,7 @@ cd GR-ML-infra
 # 安装依赖
 pip install -r requirements.txt
 
-# 安装开源框架（可选，项目有智能回退机制）
+# 安装开源框架（可选，项目支持统一流水线）
 pip install vllm tensorrt torchrec fbgemm-gpu
 ```
 
@@ -158,8 +158,8 @@ def _unified_inference_pipeline(self, user_behaviors, ...):
 
 ### 技术优势
 - **开源框架集成**: 基于成熟的开源技术栈
-- **智能策略选择**: 根据输入特征自动选择最优引擎
-- **多级回退机制**: 确保系统高可用性
+- **统一推理管道**: HSTU→ONNX→TensorRT→VLLM的端到端优化
+- **自动优化链**: 从模型到服务的完整优化链路
 - **完整监控体系**: 实时性能监控和调优
 
 ## 🎮 使用示例
