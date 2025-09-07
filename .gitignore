@@ -1,8 +1,14 @@
-# Python
+# =============================================================================
+# Python 标准忽略文件配置
+# =============================================================================
+
+# Python 字节码和缓存
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+
+# Python 分发和打包
 .Python
 build/
 develop-eggs/
@@ -21,27 +27,27 @@ wheels/
 *.egg
 MANIFEST
 
-# External frameworks (too large for GitHub)
-external/
-external/*
+# PyInstaller
+*.manifest
+*.spec
 
-# Generated runtime directories
-models/
-models/*
-data/
-data/*
-logs/
-logs/*
-configs/
-configs/*
-deployment/
-deployment/*
-notebooks/
-notebooks/*
-scripts/
-scripts/*
+# 单元测试和覆盖率
+.tox/
+.nox/
+.coverage
+.pytest_cache/
+.cache/
+htmlcov/
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
 
-# Model files and artifacts
+# =============================================================================
+# 机器学习和深度学习相关
+# =============================================================================
+
+# 模型文件和权重
 *.pth
 *.pt
 *.ckpt
@@ -51,64 +57,211 @@ scripts/*
 *.pkl
 *.h5
 *.safetensors
+*.bin
+*.model
 
-# Logs and outputs
+# 数据文件
+*.csv
+*.json
+*.hdf5
+*.npy
+*.npz
+*.parquet
+
+# 训练产出
+models/
+checkpoints/
+saved_models/
+model_weights/
+tensorboard_logs/
+wandb/
+
+# =============================================================================
+# 运行时生成目录 (只提交核心代码，不提交运行时文件)
+# =============================================================================
+
+# 外部开源框架源码 (太大，不适合提交)
+external/
+external/*
+
+# 运行时生成的目录
+data/
+data/*
+logs/
+logs/*
+configs/*.json
+configs/*.yaml
+configs/*.yml
+models/
+models/*
+deployment/
+deployment/*
+notebooks/
+notebooks/*
+scripts/
+
+# 缓存目录
+embedding_cache/
+cache/
+.cache/
+__pycache__/
+
+# =============================================================================
+# 日志和输出文件
+# =============================================================================
+
+# 应用日志
 *.log
 opensoure_inference.log
-benchmark_results_*.json
-performance_metrics.log
+hstu_api_server.log
 inference.log
+performance_metrics.log
 
-# Cache
-.cache/
-.pytest_cache/
-.coverage
-htmlcov/
-embedding_cache/
+# 基准测试结果
+benchmark_results_*.json
+benchmark_output/
+test_output/
 
-# IDE and development
+# API服务相关日志
+api_*.log
+server_*.log
+
+# =============================================================================
+# 开发环境相关
+# =============================================================================
+
+# 虚拟环境
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.python-version
+
+# IDE配置
 .vscode/
 .idea/
 .claude/
 *.swp
 *.swo
 *~
+.spyderproject
+.spyproject
 
-# OS
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# =============================================================================
+# 操作系统相关
+# =============================================================================
+
+# macOS
 .DS_Store
 .DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
+
+# Windows
 ehthumbs.db
 Thumbs.db
+*.lnk
 
-# Environment
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+# Linux
+*~
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# =============================================================================
+# 临时文件和备份
+# =============================================================================
 
-# Temporary files
+# 临时文件
 *.tmp
 *.temp
 temp/
 tmp/
 
-# Test outputs and results
-test_output/
-benchmark_output/
-
-# Docker
-.dockerignore
-Dockerfile*
-
-# Backup files
+# 备份文件
 *.bak
 *.backup
+*.orig
+
+# 编辑器临时文件
+.#*
+*#
+
+# =============================================================================
+# Docker 和容器化
+# =============================================================================
+
+# Docker相关 (保留核心Dockerfile，忽略构建产物)
+.dockerignore
+docker-compose.override.yml
+.docker/
+
+# =============================================================================
+# Git 相关
+# =============================================================================
+
+# Git 合并冲突文件
+*.orig
+
+# =============================================================================
+# 项目特定配置 (保留核心代码，忽略个人配置)
+# =============================================================================
+
+# 个人配置文件
+config.json
+local_config.*
+personal_config.*
+
+# API密钥和敏感信息
+.env.local
+.env.production
+secrets.json
+api_keys.txt
+
+# 测试输出
+test_results/
+pytest_html_report.html
+
+# GPU缓存
+gpu_cache/
+cuda_cache/
+
+# =============================================================================
+# 版本控制和CI/CD
+# =============================================================================
+
+# CI/CD 输出 (保留配置文件，忽略输出)
+.github/workflows/outputs/
+.circleci/
+
+# =============================================================================
+# 说明：保留的核心文件和目录
+# =============================================================================
+
+# ✅ 保留的核心目录：
+# - integrations/         (开源框架集成代码)
+# - optimizations/        (自定义算子优化)
+# - examples/            (使用示例)
+# - tests/               (测试代码)
+# - docs/                (项目文档)
+# - .github/workflows/   (CI/CD配置)
+
+# ✅ 保留的核心文件：
+# - *.py                 (所有Python源码)
+# - requirements*.txt    (依赖配置)
+# - README.md           (项目文档)
+# - LICENSE             (许可证)
+# - .gitignore          (版本控制配置)
+# - *.sh                (启动脚本)
+
+# ❌ 忽略的内容：
+# - 所有运行时生成的文件和目录
+# - 外部依赖源码
+# - 模型权重和数据文件
+# - 日志和缓存文件
+# - 个人开发配置
