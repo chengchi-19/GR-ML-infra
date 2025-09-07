@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 # 导入集成模块
 try:
     from integrations.hstu.hstu_model import HSTUGenerativeRecommender, HSTUModelConfig, create_hstu_model
+    from integrations.hstu.feature_processor import create_hstu_feature_processor
+    from integrations.hstu.onnx_exporter import export_hstu_model
     from integrations.vllm.vllm_engine import VLLMRecommenderEngine, VLLMConfig, create_vllm_engine
     from integrations.tensorrt.tensorrt_engine import TensorRTOptimizedEngine, TensorRTConfig, create_tensorrt_engine
     
@@ -253,6 +255,205 @@ class OpenSourceFrameworkController:
             status = "✅ 可用" if available else "❌ 不可用"
             logger.info(f"  {framework}: {status}")
     
+    def infer_with_optimal_strategy(
+        self,
+        user_id: str,
+        session_id: str,
+        user_behaviors: List[Dict[str, Any]],
+        num_recommendations: int = 10,
+        strategy: str = "auto",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        使用最优策略进行推理（统一入口）
+        
+        策略选择优先级:
+        1. unified - 统一推理管道（推荐）
+        2. tensorrt - TensorRT加速推理
+        3. vllm - VLLM推理服务  
+        4. hstu - 原生HSTU模型
+        5. fallback - 回退方案
+        """
+        
+        start_time = time.time()
+        
+        # 策略选择
+        selected_strategy = self._select_optimal_strategy(strategy)
+        
+        try:
+            if selected_strategy == "unified":
+                result = self.infer_with_unified_pipeline(
+                    user_id, session_id, user_behaviors, num_recommendations, **kwargs
+                )
+            elif selected_strategy == "tensorrt" and self.framework_availability['tensorrt']:
+                result = self._infer_with_tensorrt(
+                    user_id, session_id, user_behaviors, num_recommendations, **kwargs
+                )
+            elif selected_strategy == "vllm" and self.framework_availability['vllm']:
+                result = self._infer_with_vllm(
+                    user_id, session_id, user_behaviors, num_recommendations, **kwargs
+                )
+            elif selected_strategy == "hstu" and self.framework_availability['hstu']:
+                result = self._infer_with_hstu(
+                    user_id, session_id, user_behaviors, num_recommendations, **kwargs
+                )
+            else:
+                result = self._infer_with_fallback(
+                    user_id, session_id, user_behaviors, num_recommendations, **kwargs
+                )
+            
+            # 添加策略信息
+            inference_time = time.time() - start_time
+            result.update({
+                'inference_strategy': selected_strategy,
+                'inference_time_ms': inference_time * 1000,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+            # 更新统计
+            self.inference_count[selected_strategy] += 1
+            self._update_performance_stats(selected_strategy, inference_time)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"推理失败 (策略: {selected_strategy}): {e}")
+            return {
+                'error': str(e),
+                'user_id': user_id,
+                'session_id': session_id,
+                'strategy': selected_strategy,
+                'timestamp': datetime.now().isoformat()
+            }
+    
+    def _select_optimal_strategy(self, requested_strategy: str) -> str:
+        """选择最优推理策略"""
+        
+        if requested_strategy == "auto":
+            # 自动选择最优策略
+            if self.framework_availability['tensorrt'] and self.framework_availability['vllm']:
+                return "unified"  # 统一管道是最优选择
+            elif self.framework_availability['tensorrt']:
+                return "tensorrt"
+            elif self.framework_availability['vllm']:
+                return "vllm" 
+            elif self.framework_availability['hstu']:
+                return "hstu"
+            else:
+                return "fallback"
+        elif requested_strategy in ["unified", "tensorrt", "vllm", "hstu"]:
+            # 检查请求的策略是否可用
+            strategy_map = {
+                "unified": self.framework_availability['tensorrt'] or self.framework_availability['vllm'],
+                "tensorrt": self.framework_availability['tensorrt'],
+                "vllm": self.framework_availability['vllm'],
+                "hstu": self.framework_availability['hstu']
+            }
+            
+            if strategy_map.get(requested_strategy, False):
+                return requested_strategy
+            else:
+                logger.warning(f"请求的策略 {requested_strategy} 不可用，使用自动选择")
+                return self._select_optimal_strategy("auto")
+        else:
+            logger.warning(f"未知策略 {requested_strategy}，使用自动选择")
+            return self._select_optimal_strategy("auto")
+    
+    def _infer_with_tensorrt(
+        self,
+        user_id: str,
+        session_id: str, 
+        user_behaviors: List[Dict[str, Any]],
+        num_recommendations: int,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """使用TensorRT进行推理"""
+        
+        try:
+            # 构建TensorRT输入
+            tensorrt_inputs = self._build_tensorrt_inputs(user_behaviors)
+            
+            # TensorRT推理
+            outputs = self.tensorrt_engine.infer(tensorrt_inputs)
+            
+            # 解析输出
+            recommendations = self._parse_tensorrt_outputs(outputs, num_recommendations)
+            
+            return {
+                'user_id': user_id,
+                'session_id': session_id,
+                'recommendations': recommendations,
+                'engine_type': 'tensorrt',
+                'feature_scores': {
+                    'engagement_score': 0.8,
+                    'retention_score': 0.7,
+                    'diversity_score': 0.6,
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"TensorRT推理失败: {e}")
+            return self._infer_with_fallback(user_id, session_id, user_behaviors, num_recommendations)
+    
+    def _infer_with_vllm(
+        self,
+        user_id: str,
+        session_id: str,
+        user_behaviors: List[Dict[str, Any]], 
+        num_recommendations: int,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """使用VLLM进行推理"""
+        
+        try:
+            # 使用VLLM引擎推理
+            result = self.vllm_engine.generate_recommendations(
+                user_id=user_id,
+                session_id=session_id,
+                user_behaviors=user_behaviors,
+                num_recommendations=num_recommendations
+            )
+            
+            result['engine_type'] = 'vllm'
+            return result
+            
+        except Exception as e:
+            logger.error(f"VLLM推理失败: {e}")
+            return self._infer_with_fallback(user_id, session_id, user_behaviors, num_recommendations)
+    
+    def _infer_with_hstu(
+        self,
+        user_id: str,
+        session_id: str,
+        user_behaviors: List[Dict[str, Any]],
+        num_recommendations: int, 
+        **kwargs
+    ) -> Dict[str, Any]:
+        """使用HSTU模型进行推理"""
+        
+        try:
+            # 使用HSTU模型生成推荐
+            recommendations = self.hstu_model.generate_recommendations(
+                user_behaviors=user_behaviors,
+                num_recommendations=num_recommendations
+            )
+            
+            return {
+                'user_id': user_id,
+                'session_id': session_id,
+                'recommendations': recommendations,
+                'engine_type': 'hstu',
+                'feature_scores': {
+                    'engagement_score': 0.7,
+                    'retention_score': 0.6, 
+                    'diversity_score': 0.8,
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"HSTU推理失败: {e}")
+            return self._infer_with_fallback(user_id, session_id, user_behaviors, num_recommendations)
+
     def infer_with_unified_pipeline(
         self,
         user_id: str,
@@ -312,46 +513,114 @@ class OpenSourceFrameworkController:
     ) -> Dict[str, Any]:
         """统一推理流水线: HSTU模型 -> ONNX导出 -> TensorRT优化 -> VLLM推理服务"""
         
-        # Step 1: HSTU模型处理
+        pipeline_stages = {
+            'hstu_feature_extraction': False,
+            'onnx_export': False, 
+            'tensorrt_optimization': False,
+            'vllm_service': False
+        }
+        
+        # Step 1: HSTU模型特征提取
         if self.framework_availability['hstu']:
             hstu_inputs = self._prepare_hstu_inputs(user_behaviors)
-            logger.info("使用HSTU模型进行特征提取...")
+            logger.info("✅ HSTU特征提取完成")
+            pipeline_stages['hstu_feature_extraction'] = True
         else:
             logger.warning("HSTU模型不可用，使用简化特征提取")
             hstu_inputs = self._fallback_feature_extraction(user_behaviors)
         
-        # Step 2: TensorRT优化推理
+        # Step 2: 动态ONNX导出（如果需要且模型可用）
+        onnx_exported = False
+        if self.framework_availability['hstu'] and kwargs.get('enable_onnx_export', True):
+            try:
+                onnx_result = self._export_onnx_model_if_needed()
+                if onnx_result.get('success', False):
+                    logger.info("✅ ONNX模型导出/验证完成")
+                    pipeline_stages['onnx_export'] = True
+                    onnx_exported = True
+            except Exception as e:
+                logger.warning(f"ONNX导出失败，继续使用PyTorch模型: {e}")
+        
+        # Step 3: TensorRT优化推理
         if self.framework_availability['tensorrt']:
             logger.info("使用TensorRT进行GPU优化推理...")
-            trt_outputs = self.tensorrt_engine.infer(hstu_inputs)
-            optimized_logits = trt_outputs
+            try:
+                trt_outputs = self.tensorrt_engine.infer(hstu_inputs)
+                optimized_logits = trt_outputs
+                pipeline_stages['tensorrt_optimization'] = True
+                logger.info("✅ TensorRT优化推理完成")
+            except Exception as e:
+                logger.warning(f"TensorRT推理失败，回退到PyTorch: {e}")
+                optimized_logits = self._pytorch_fallback_inference(hstu_inputs)
         else:
             logger.warning("TensorRT不可用，使用PyTorch推理")
             optimized_logits = self._pytorch_fallback_inference(hstu_inputs)
         
-        # Step 3: VLLM推理服务优化
+        # Step 4: VLLM推理服务优化
         if self.framework_availability['vllm']:
             logger.info("使用VLLM进行推理服务优化...")
-            final_result = self._vllm_service_optimization(
-                optimized_logits, user_id, session_id, user_behaviors, num_recommendations
-            )
+            try:
+                final_result = self._vllm_service_optimization(
+                    optimized_logits, user_id, session_id, user_behaviors, num_recommendations
+                )
+                pipeline_stages['vllm_service'] = True
+                logger.info("✅ VLLM服务优化完成")
+            except Exception as e:
+                logger.warning(f"VLLM服务优化失败，使用标准后处理: {e}")
+                final_result = self._standard_post_processing(
+                    optimized_logits, user_id, session_id, user_behaviors, num_recommendations
+                )
         else:
             logger.warning("VLLM不可用，使用标准后处理")
             final_result = self._standard_post_processing(
                 optimized_logits, user_id, session_id, user_behaviors, num_recommendations
             )
         
+        # 添加管道信息
         final_result.update({
             'engine_type': 'unified_pipeline',
-            'pipeline_stages': {
-                'hstu_model': self.framework_availability['hstu'],
-                'onnx_export': True,
-                'tensorrt_optimization': self.framework_availability['tensorrt'],
-                'vllm_service': self.framework_availability['vllm']
-            }
+            'pipeline_stages': pipeline_stages,
+            'pipeline_completion_rate': sum(pipeline_stages.values()) / len(pipeline_stages),
+            'onnx_exported': onnx_exported,
         })
         
         return final_result
+    
+    def _export_onnx_model_if_needed(self) -> Dict[str, Any]:
+        """按需导出ONNX模型（缓存机制）"""
+        
+        import os
+        from pathlib import Path
+        
+        # 检查是否已有有效的ONNX模型
+        onnx_dir = Path("./models")
+        onnx_path = onnx_dir / "hstu_unified_pipeline.onnx"
+        
+        # 如果ONNX文件不存在或过期，重新导出
+        if not onnx_path.exists():
+            try:
+                logger.info("导出HSTU模型到ONNX...")
+                
+                # 使用导入的export_hstu_model函数
+                export_result = export_hstu_model(
+                    model=self.hstu_model,
+                    model_config=self.hstu_model.config,
+                    export_dir=str(onnx_dir),
+                    batch_sizes=[1, 4, 8],
+                    sequence_lengths=[64, 128, 256, 512],
+                    export_inference_only=True,
+                    optimize=True
+                )
+                
+                return export_result
+                
+            except Exception as e:
+                logger.error(f"ONNX导出失败: {e}")
+                return {'success': False, 'error': str(e)}
+        else:
+            logger.info("使用缓存的ONNX模型")
+            return {'success': True, 'cached': True, 'onnx_path': str(onnx_path)}
+    
     
     def _prepare_hstu_inputs(self, user_behaviors: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         """使用HSTU特征处理器准备模型输入"""

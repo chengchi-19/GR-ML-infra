@@ -275,20 +275,52 @@ class HSTUGenerativeRecommender(nn.Module):
         return_dict: bool = True,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
-        """使用Meta HSTU的前向传播"""
+        """使用Meta HSTU的前向传播，适配优化的特征处理"""
         
-        # 创建SequentialFeatures对象
+        batch_size, seq_len = input_ids.shape
+        device = input_ids.device
+        
+        # 处理时间戳 (来自kwargs)
+        timestamps = kwargs.get('timestamps', torch.arange(seq_len, device=device, dtype=torch.float32).unsqueeze(0))
+        
+        # 创建适配的SequentialFeatures对象
         features = SequentialFeatures(
             user_id=input_ids[:, 0].unsqueeze(1),  # 使用第一个token作为user_id
             item_id=input_ids,
-            timestamps=torch.arange(input_ids.shape[1], device=input_ids.device).unsqueeze(0).expand(input_ids.shape[0], -1),
+            timestamps=timestamps.long(),  # HSTU期望长整型时间戳
             weights=attention_mask if attention_mask is not None else torch.ones_like(input_ids, dtype=torch.float),
         )
         
         # 获取嵌入
         embeddings = self.embedding_module(features)
         
-        # HSTU编码
+        # 如果有密集特征，融合到嵌入中
+        if dense_features is not None:
+            # 通过线性层将密集特征投影到嵌入维度
+            if not hasattr(self, 'dense_feature_projector'):
+                self.dense_feature_projector = nn.Linear(
+                    dense_features.shape[-1], 
+                    self.config.d_model,
+                    device=device
+                )
+            
+            dense_embeddings = self.dense_feature_projector(dense_features)
+            # 加权融合原始嵌入和密集特征嵌入
+            embeddings = embeddings + 0.1 * dense_embeddings  # 0.1为融合权重
+        
+        # 如果有用户画像特征，进一步增强嵌入
+        if user_profile is not None:
+            if not hasattr(self, 'user_profile_projector'):
+                self.user_profile_projector = nn.Linear(
+                    user_profile.shape[-1],
+                    self.config.d_model,
+                    device=device
+                )
+            
+            user_embeddings = self.user_profile_projector(user_profile)
+            embeddings = embeddings + 0.05 * user_embeddings  # 更小的权重避免覆盖主特征
+        
+        # HSTU编码 - 使用增强的特征
         encoded_output = self.hstu_encoder(
             embeddings=embeddings,
             features=features,
@@ -298,8 +330,16 @@ class HSTUGenerativeRecommender(nn.Module):
         # 输出投影
         logits = self.output_projection(encoded_output)
         
-        # 多任务预测
-        pooled_output = encoded_output.mean(dim=1)  # 简单平均池化
+        # 多任务预测 - 使用更智能的池化策略
+        # 使用注意力权重进行加权平均池化
+        if attention_mask is not None:
+            mask_expanded = attention_mask.unsqueeze(-1).expand_as(encoded_output)
+            masked_output = encoded_output * mask_expanded.float()
+            pooled_output = masked_output.sum(dim=1) / attention_mask.sum(dim=1, keepdim=True).float()
+        else:
+            pooled_output = encoded_output.mean(dim=1)  # 简单平均池化
+        
+        # 多任务预测头
         engagement_scores = self.engagement_head(pooled_output)
         retention_scores = self.retention_head(pooled_output)
         monetization_scores = self.monetization_head(pooled_output)
@@ -310,6 +350,7 @@ class HSTUGenerativeRecommender(nn.Module):
             'engagement_scores': engagement_scores,
             'retention_scores': retention_scores, 
             'monetization_scores': monetization_scores,
+            'pooled_output': pooled_output,  # 添加池化输出供后续使用
         }
         
         return results

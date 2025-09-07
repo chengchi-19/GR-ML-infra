@@ -216,20 +216,23 @@ class HSTUFeatureProcessor:
             return 5  # 快速浏览
     
     def _create_hstu_input(self, features: Dict[str, List]) -> Dict[str, torch.Tensor]:
-        """创建HSTU模型输入"""
+        """创建HSTU模型输入，适配Meta HSTU的SequentialFeatures格式"""
         seq_len = len(features['video_ids'])
         
         # 视频ID序列
         input_ids = torch.tensor([features['video_ids']], dtype=torch.long)
         
-        # 注意力掩码
+        # 注意力掩码 (处理padding)
         attention_mask = torch.ones(1, seq_len, dtype=torch.long)
         
         # 位置编码
         position_ids = torch.arange(seq_len, dtype=torch.long).unsqueeze(0)
         
-        # 时间特征
+        # 处理时间戳特征 - 适配HSTU的时序要求
         timestamps = torch.tensor([features['timestamps']], dtype=torch.float32)
+        # 归一化时间戳到合理范围
+        if timestamps.max() > timestamps.min():
+            timestamps = (timestamps - timestamps.min()) / (timestamps.max() - timestamps.min())
         
         # 归一化数值特征
         watch_durations = torch.tensor([features['watch_durations']], dtype=torch.float32)
@@ -238,28 +241,149 @@ class HSTUFeatureProcessor:
         is_shared = torch.tensor([features['is_shared']], dtype=torch.float32)
         engagement_scores = torch.tensor([features['engagement_scores']], dtype=torch.float32)
         
-        # 组合密集特征
-        dense_features = torch.stack([
+        # 交互类型特征 (HSTU需要的重要信号)
+        interaction_types = torch.tensor([features['interaction_types']], dtype=torch.float32)
+        
+        # 类别特征
+        categories = torch.tensor([features['categories']], dtype=torch.long)
+        
+        # 组合密集特征 - 增强特征工程
+        base_features = torch.stack([
             watch_durations,
             watch_percentages,
             is_liked,
             is_shared,
-            engagement_scores
+            engagement_scores,
+            interaction_types
+        ], dim=-1)
+        
+        # 添加衍生特征 (提升HSTU建模效果)
+        # 1. 观看深度分桶
+        watch_depth = torch.where(watch_percentages > 0.8, 1.0, 
+                                torch.where(watch_percentages > 0.5, 0.7, 
+                                          torch.where(watch_percentages > 0.2, 0.3, 0.0)))
+        
+        # 2. 参与度等级
+        engagement_level = torch.where(engagement_scores > 0.8, 3.0,
+                                     torch.where(engagement_scores > 0.6, 2.0, 
+                                               torch.where(engagement_scores > 0.3, 1.0, 0.0)))
+        
+        # 3. 交互强度 (综合点赞分享等)
+        interaction_strength = is_liked + is_shared * 2.0  # 分享权重更高
+        
+        # 组合所有特征
+        enhanced_features = torch.stack([
+            watch_durations,
+            watch_percentages, 
+            is_liked,
+            is_shared,
+            engagement_scores,
+            interaction_types,
+            watch_depth,
+            engagement_level,
+            interaction_strength
         ], dim=-1)
         
         # 填充到指定维度
-        if dense_features.shape[-1] < self.num_dense_features:
-            padding = torch.zeros(1, seq_len, self.num_dense_features - dense_features.shape[-1])
-            dense_features = torch.cat([dense_features, padding], dim=-1)
+        current_dim = enhanced_features.shape[-1]
+        if current_dim < self.num_dense_features:
+            # 添加时间相关特征来填充剩余维度
+            time_features = self._create_temporal_features(timestamps, seq_len)
+            padding_needed = self.num_dense_features - current_dim - time_features.shape[-1]
+            
+            if padding_needed > 0:
+                padding = torch.zeros(1, seq_len, padding_needed)
+                dense_features = torch.cat([enhanced_features, time_features, padding], dim=-1)
+            else:
+                dense_features = torch.cat([enhanced_features, time_features], dim=-1)
+                # 如果超出维度，截取到指定大小
+                dense_features = dense_features[:, :, :self.num_dense_features]
+        else:
+            # 截取到指定维度
+            dense_features = enhanced_features[:, :, :self.num_dense_features]
         
+        # 为HSTU模型创建适配的输入格式
+        # 包含标准的Transformer输入 + HSTU特定的特征
         return {
             'input_ids': input_ids,
             'attention_mask': attention_mask,
             'position_ids': position_ids,
             'dense_features': dense_features,
             'timestamps': timestamps,
-            'sequence_length': torch.tensor([seq_len], dtype=torch.long)
+            'categories': categories,
+            'interaction_types': interaction_types.long(),
+            'sequence_length': torch.tensor([seq_len], dtype=torch.long),
+            # HSTU特定的输入 - 用户和物品序列
+            'user_profile': self._create_user_profile_features(features),
+            'item_features': dense_features,  # 使用密集特征作为物品特征
         }
+    
+    def _create_temporal_features(self, timestamps: torch.Tensor, seq_len: int) -> torch.Tensor:
+        """创建时间相关特征"""
+        batch_size = timestamps.shape[0]
+        
+        # 时间差特征
+        if seq_len > 1:
+            time_diffs = torch.diff(timestamps, dim=1, prepend=timestamps[:, :1])
+            # 归一化时间差
+            time_diffs = torch.log1p(time_diffs.abs() + 1e-8)  # log(1+x) 避免数值问题
+        else:
+            time_diffs = torch.zeros_like(timestamps)
+            
+        # 时间周期特征 (假设是秒级时间戳)
+        # 小时特征 (0-23)
+        hours = (timestamps % 86400) / 3600  # 一天86400秒
+        hour_sin = torch.sin(2 * np.pi * hours / 24)
+        hour_cos = torch.cos(2 * np.pi * hours / 24)
+        
+        # 周几特征 (0-6)
+        days = (timestamps // 86400) % 7 
+        day_sin = torch.sin(2 * np.pi * days / 7)
+        day_cos = torch.cos(2 * np.pi * days / 7)
+        
+        # 组合时间特征
+        temporal_features = torch.stack([
+            time_diffs,
+            hour_sin,
+            hour_cos, 
+            day_sin,
+            day_cos
+        ], dim=-1)
+        
+        return temporal_features
+    
+    def _create_user_profile_features(self, features: Dict[str, List]) -> torch.Tensor:
+        """创建用户画像特征"""
+        seq_len = len(features['video_ids'])
+        
+        # 基于历史行为计算用户偏好
+        avg_watch_percentage = np.mean(features['watch_percentages'])
+        like_rate = np.mean(features['is_liked'])
+        share_rate = np.mean(features['is_shared'])
+        avg_engagement = np.mean(features['engagement_scores'])
+        
+        # 用户行为模式
+        behavior_diversity = len(set(features['categories'])) / max(len(features['categories']), 1)
+        interaction_frequency = np.mean([1 if x > 0 else 0 for x in features['interaction_types']])
+        
+        # 用户活跃度
+        watch_completion_rate = sum(1 for x in features['watch_percentages'] if x > 0.8) / max(seq_len, 1)
+        
+        # 组合用户特征
+        user_profile = torch.tensor([
+            avg_watch_percentage,
+            like_rate,
+            share_rate,
+            avg_engagement,
+            behavior_diversity,
+            interaction_frequency,
+            watch_completion_rate
+        ], dtype=torch.float32).unsqueeze(0)  # [1, 7]
+        
+        # 扩展到序列长度 [1, seq_len, 7]
+        user_profile = user_profile.unsqueeze(1).expand(1, seq_len, -1)
+        
+        return user_profile
     
     def _create_empty_features(self) -> Dict[str, torch.Tensor]:
         """创建空特征"""
@@ -269,7 +393,11 @@ class HSTUFeatureProcessor:
             'position_ids': torch.zeros(1, 1, dtype=torch.long),
             'dense_features': torch.zeros(1, 1, self.num_dense_features),
             'timestamps': torch.zeros(1, 1),
-            'sequence_length': torch.tensor([0], dtype=torch.long)
+            'categories': torch.zeros(1, 1, dtype=torch.long),
+            'interaction_types': torch.zeros(1, 1, dtype=torch.long),
+            'sequence_length': torch.tensor([0], dtype=torch.long),
+            'user_profile': torch.zeros(1, 1, 7),  # 7维用户特征
+            'item_features': torch.zeros(1, 1, self.num_dense_features)
         }
     
     def get_feature_stats(self, user_behaviors: List[Dict[str, Any]]) -> Dict[str, Any]:
