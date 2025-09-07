@@ -1,8 +1,8 @@
-# 🌟 开源框架集成推荐系统推理优化项目
+# 🌟 基于生成式推荐模型的推理优化项目
 
 ## 📋 项目概述
 
-这是一个基于**开源框架**的生成式推荐模型推理优化项目，集成了顶级开源技术栈：
+这是一个基于**开源框架**的生成式推荐模型推理优化项目，集成了Meta开源的HSTU模型、VLLM推理引擎、TensorRT加速引擎、自定义Triton和CUTLASS算子：
 - **Meta HSTU** (Hierarchical Sequential Transduction Units) 生成式推荐模型
 - **VLLM** (PagedAttention + Continuous Batching) 推理优化框架  
 - **TensorRT** GPU推理加速引擎
@@ -119,15 +119,14 @@ def _unified_inference_pipeline(self, user_behaviors, ...):
 ### 2. Meta HSTU模型集成 (`integrations/hstu/hstu_model.py`)
 
 **核心特性**:
-- 真正集成Meta开源的HSTU架构
+- 集成Meta开源的HSTU架构
 - 支持Hierarchical Sequential Transduction Units
-- 10倍于Transformer的推理速度
 - 多任务学习(engagement, retention, monetization)
 
 ### 3. VLLM推理引擎 (`integrations/vllm/vllm_engine.py`)
 
 **性能优化**:
-- PagedAttention内存优化 (24倍吞吐量提升)
+- PagedAttention内存优化
 - Continuous Batching批处理优化
 - 智能用户行为分析和推荐生成
 - 异步推理支持
@@ -233,8 +232,6 @@ pip install vllm>=0.6.0
 # TensorRT支持
 pip install tensorrt>=10.0.0 tensorrt-cu12>=10.0.0
 ```
-
-**注意**: 项目具有智能回退机制，即使某些框架未安装也可正常运行。
 
 ## 🧪 测试验证
 
@@ -346,4 +343,4 @@ python tests/test_integration.py
 
 ---
 
-**🎯 项目重点**: 这是一个真正基于开源框架的推荐系统推理优化项目，通过集成Meta HSTU、VLLM、TensorRT等顶级开源技术，实现了生产级的高性能推理系统。项目具有智能策略选择、自动回退、性能监控等企业级特性，是推理优化的完整解决方案。
+**🎯 项目重点**: 这是一个真正基于开源框架的推荐系统推理优化项目，通过集成Meta HSTU、VLLM、TensorRT等顶级开源技术，实现了生产级的高性能推理系统。项目针对生成式推荐模型HSTU自定义了多个Triton和CUTLASS算子，通过TensorRT加速引擎进行加速，最后通过VLLM推理引擎进行推理，实现了生产级的高性能推理系统。是推理优化的完整解决方案。

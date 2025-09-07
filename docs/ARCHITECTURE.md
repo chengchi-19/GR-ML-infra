@@ -48,10 +48,9 @@ examples/                    # 使用示例
 └── ...
 
 tests/                      # 测试套件
-├── test_integration.py     # 集成测试
 ├── test_interaction.py     # 交互测试
 ├── test_prefill_decode.py  # 预填充解码测试
-└── test_user_behavior.py   # 用户行为测试
+└── test_feature_processing.py  # 特征处理测试
 ```
 
 ## 🔄 推理流程架构

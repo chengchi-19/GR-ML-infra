@@ -97,7 +97,7 @@ test_cases = [
 ```yaml
 CPU: 8+ cores
 RAM: 32GB+
-GPU: RTX 3090/4090 (24GB) 或 V100 (32GB)
+GPU: V100 (32GB)
 Storage: 100GB+ SSD
 ```
 
