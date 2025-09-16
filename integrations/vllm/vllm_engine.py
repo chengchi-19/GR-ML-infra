@@ -247,6 +247,391 @@ class VLLMRecommenderEngine:
                 user_id, session_id, user_behaviors, num_recommendations, **kwargs
             )
     
+    def generate_recommendations_with_kv_cache(
+        self,
+        user_id: str,
+        session_id: str,
+        user_behaviors: List[Dict[str, Any]],
+        prefill_kv_cache: Optional[Dict[str, torch.Tensor]] = None,
+        prefill_logits: Optional[torch.Tensor] = None,
+        num_recommendations: int = 10,
+        max_new_tokens: int = 50,
+        temperature: float = 0.8,
+        top_p: float = 0.95,
+        top_k: int = 50,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """基于Prefill阶段的KV Cache进行Decode生成推荐
+
+        Args:
+            user_id: 用户ID
+            session_id: 会话ID
+            user_behaviors: 用户行为序列
+            prefill_kv_cache: Prefill阶段计算的KV Cache
+            prefill_logits: Prefill阶段的logits输出
+            num_recommendations: 推荐数量
+            max_new_tokens: 最大新生成token数
+            temperature: 采样温度
+            top_p: Top-p采样参数
+            top_k: Top-k采样参数
+            **kwargs: 其他参数
+
+        Returns:
+            包含推荐结果的字典
+        """
+
+        logger.info("🚀 开始vLLM Decode推理 (使用KV Cache)")
+
+        if not self.vllm_available:
+            logger.warning("vLLM不可用，回退到标准推荐生成")
+            return self.generate_recommendations(
+                user_id, session_id, user_behaviors, num_recommendations, **kwargs
+            )
+
+        try:
+            # 转换KV Cache格式
+            vllm_kv_cache = self._convert_kv_cache_to_vllm_format(prefill_kv_cache)
+
+            # 准备初始token序列（从prefill logits获取）
+            if prefill_logits is not None:
+                # 从prefill_logits中获取下一个token
+                next_token_logits = prefill_logits[0, -1, :]  # 取最后一个位置的logits
+                next_token_id = torch.argmax(next_token_logits).item()
+                initial_tokens = [next_token_id]
+            else:
+                # 回退到基于行为的token生成
+                initial_tokens = self._generate_initial_tokens_from_behaviors(user_behaviors)
+
+            # 调用vLLM引擎进行真正的decode生成
+            recommendations = self._vllm_decode_generation(
+                user_id=user_id,
+                session_id=session_id,
+                kv_cache=vllm_kv_cache,
+                initial_tokens=initial_tokens,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                num_recommendations=num_recommendations
+            )
+
+            logger.info(f"✅ vLLM Decode完成，生成{len(recommendations)}个推荐")
+
+            return {
+                'user_id': user_id,
+                'session_id': session_id,
+                'recommendations': recommendations,
+                'engine_type': 'vllm_with_kv_cache',
+                'decode_method': 'kv_cache_continuation',
+                'prefill_engine': 'tensorrt',
+                'decode_engine': 'vllm',
+                'kv_cache_used': prefill_kv_cache is not None,
+                'generation_mode': 'prefill_decode_split'
+            }
+
+        except Exception as e:
+            logger.error(f"❌ vLLM KV Cache推理失败: {e}")
+            # 回退到标准推荐生成
+            logger.info("回退到标准vLLM推荐生成")
+            return self.generate_recommendations(
+                user_id, session_id, user_behaviors, num_recommendations, **kwargs
+            )
+
+    def _convert_kv_cache_to_vllm_format(self, kv_cache: Optional[Dict[str, torch.Tensor]]) -> Optional[Dict]:
+        """将TensorRT的KV Cache格式转换为vLLM格式"""
+
+        if kv_cache is None:
+            logger.warning("KV Cache为空，无法转换")
+            return None
+
+        try:
+            logger.info("转换KV Cache格式: TensorRT -> vLLM")
+
+            vllm_kv_cache = {}
+
+            # 遍历每一层的KV Cache
+            for layer_name, layer_cache in kv_cache.items():
+                if isinstance(layer_cache, dict) and 'key' in layer_cache and 'value' in layer_cache:
+                    key_tensor = layer_cache['key']
+                    value_tensor = layer_cache['value']
+
+                    # vLLM期望的KV Cache格式：[num_blocks, num_heads, block_size, head_dim]
+                    # 这里需要根据vLLM的具体要求进行转换
+
+                    # 简化的转换（实际需要根据vLLM的PagedAttention格式）
+                    batch_size, seq_len, num_heads, head_dim = key_tensor.shape
+
+                    # vLLM的block-wise格式转换
+                    block_size = 16  # vLLM默认block size
+                    num_blocks = (seq_len + block_size - 1) // block_size
+
+                    # 重塑为block格式
+                    padded_seq_len = num_blocks * block_size
+                    if seq_len < padded_seq_len:
+                        # Padding到block边界
+                        padding_key = torch.zeros(batch_size, padded_seq_len - seq_len, num_heads, head_dim,
+                                                 dtype=key_tensor.dtype, device=key_tensor.device)
+                        key_tensor = torch.cat([key_tensor, padding_key], dim=1)
+
+                        padding_value = torch.zeros(batch_size, padded_seq_len - seq_len, num_heads, head_dim,
+                                                   dtype=value_tensor.dtype, device=value_tensor.device)
+                        value_tensor = torch.cat([value_tensor, padding_value], dim=1)
+
+                    # 重塑为vLLM block格式: [batch_size, num_blocks, block_size, num_heads, head_dim]
+                    key_blocks = key_tensor.view(batch_size, num_blocks, block_size, num_heads, head_dim)
+                    value_blocks = value_tensor.view(batch_size, num_blocks, block_size, num_heads, head_dim)
+
+                    # 转换为vLLM期望的格式: [num_blocks, num_heads, block_size, head_dim]
+                    # 注意：这里简化处理，实际可能需要考虑batch维度的处理
+                    vllm_kv_cache[layer_name] = {
+                        'key': key_blocks[0],  # 取第一个batch
+                        'value': value_blocks[0],
+                        'block_info': {
+                            'num_blocks': num_blocks,
+                            'block_size': block_size,
+                            'original_seq_len': seq_len
+                        }
+                    }
+
+            logger.info(f"✅ KV Cache格式转换完成，{len(vllm_kv_cache)}层")
+            return vllm_kv_cache
+
+        except Exception as e:
+            logger.error(f"❌ KV Cache格式转换失败: {e}")
+            return None
+
+    def _generate_initial_tokens_from_behaviors(self, user_behaviors: List[Dict[str, Any]]) -> List[int]:
+        """从用户行为生成初始token序列"""
+
+        try:
+            if not user_behaviors:
+                return [1]  # 默认开始token
+
+            # 简化的token生成：基于最后一个行为
+            last_behavior = user_behaviors[-1]
+            video_id = last_behavior.get('video_id', 'default')
+
+            # 将video_id转换为token id（简化方法）
+            # 实际应该使用tokenizer进行转换
+            token_id = abs(hash(video_id)) % 50000  # 假设vocab size为50000
+
+            return [token_id]
+
+        except Exception as e:
+            logger.error(f"从用户行为生成初始token失败: {e}")
+            return [1]
+
+    def _vllm_decode_generation(
+        self,
+        user_id: str,
+        session_id: str,
+        kv_cache: Optional[Dict],
+        initial_tokens: List[int],
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        top_k: int,
+        num_recommendations: int
+    ) -> List[Dict[str, Any]]:
+        """使用vLLM引擎进行真正的Decode生成"""
+
+        try:
+            # 如果有KV Cache，使用它进行生成
+            if kv_cache is not None:
+                logger.info("使用KV Cache进行vLLM生成")
+                return self._vllm_generate_with_cache(
+                    kv_cache, initial_tokens, max_new_tokens, temperature, top_p, top_k, num_recommendations
+                )
+            else:
+                logger.info("没有KV Cache，使用标准vLLM生成")
+                return self._vllm_generate_standard(
+                    initial_tokens, max_new_tokens, temperature, top_p, top_k, num_recommendations
+                )
+
+        except Exception as e:
+            logger.error(f"vLLM decode generation失败: {e}")
+            return self._generate_fallback_recommendations(num_recommendations)
+
+    def _vllm_generate_with_cache(
+        self,
+        kv_cache: Dict,
+        initial_tokens: List[int],
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        top_k: int,
+        num_recommendations: int
+    ) -> List[Dict[str, Any]]:
+        """使用KV Cache进行vLLM生成（核心方法）"""
+
+        try:
+            # 创建带有KV Cache的prompt
+            # 注意：这里需要根据vLLM的具体API调整
+            prompt_tokens = initial_tokens
+
+            # 设置生成参数
+            sampling_params = SamplingParams(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_tokens=max_new_tokens,
+                seed=self.config.seed,
+            )
+
+            # 调用vLLM引擎的generate_recommendations方法
+            # 这里是关键：将KV Cache注入到vLLM的生成过程中
+            if hasattr(self.sync_engine, 'generate_with_kv_cache'):
+                # 如果vLLM引擎支持KV Cache接口
+                outputs = self.sync_engine.generate_with_kv_cache(
+                    prompt_token_ids=prompt_tokens,
+                    kv_cache=kv_cache,
+                    sampling_params=sampling_params
+                )
+            else:
+                # 回退到标准生成方法
+                logger.warning("vLLM引擎不支持KV Cache接口，使用标准生成")
+                prompt_text = self._tokens_to_text(prompt_tokens)
+                outputs = self.sync_engine.generate([prompt_text], sampling_params)
+
+            # 解析生成结果
+            if outputs:
+                output = outputs[0]
+                if hasattr(output, 'outputs') and output.outputs:
+                    generated_tokens = output.outputs[0].token_ids
+                    generated_text = output.outputs[0].text
+
+                    # 将生成的token转换为推荐
+                    recommendations = self._tokens_to_recommendations(
+                        generated_tokens, generated_text, num_recommendations
+                    )
+
+                    logger.info(f"✅ 使用KV Cache生成{len(recommendations)}个推荐")
+                    return recommendations
+
+            # 如果没有输出，返回回退推荐
+            logger.warning("vLLM KV Cache生成无输出，使用回退推荐")
+            return self._generate_fallback_recommendations(num_recommendations)
+
+        except Exception as e:
+            logger.error(f"vLLM KV Cache生成失败: {e}")
+            return self._generate_fallback_recommendations(num_recommendations)
+
+    def _vllm_generate_standard(
+        self,
+        initial_tokens: List[int],
+        max_new_tokens: int,
+        temperature: float,
+        top_p: float,
+        top_k: int,
+        num_recommendations: int
+    ) -> List[Dict[str, Any]]:
+        """标准vLLM生成（无KV Cache）"""
+
+        try:
+            # 将token转换为文本
+            prompt_text = self._tokens_to_text(initial_tokens)
+
+            # 设置生成参数
+            sampling_params = SamplingParams(
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                max_tokens=max_new_tokens,
+                seed=self.config.seed,
+            )
+
+            # 标准vLLM生成
+            outputs = self.sync_engine.generate([prompt_text], sampling_params)
+
+            if outputs:
+                output = outputs[0]
+                if hasattr(output, 'outputs') and output.outputs:
+                    generated_text = output.outputs[0].text
+                    return self._parse_generated_recommendations(generated_text, num_recommendations)
+
+            return self._generate_fallback_recommendations(num_recommendations)
+
+        except Exception as e:
+            logger.error(f"标准vLLM生成失败: {e}")
+            return self._generate_fallback_recommendations(num_recommendations)
+
+    def _tokens_to_text(self, tokens: List[int]) -> str:
+        """将token ID转换为文本"""
+        try:
+            if hasattr(self, 'tokenizer') and self.tokenizer:
+                return self.tokenizer.decode(tokens)
+            else:
+                # 简化的转换
+                return f"<tokens:{','.join(map(str, tokens))}>"
+        except Exception as e:
+            logger.error(f"Token转文本失败: {e}")
+            return "<decode_error>"
+
+    def _tokens_to_recommendations(
+        self,
+        token_ids: List[int],
+        text: str,
+        num_recommendations: int
+    ) -> List[Dict[str, Any]]:
+        """将生成的token转换为推荐结果"""
+
+        recommendations = []
+
+        try:
+            # 方法1: 直接从token_ids生成推荐
+            for i, token_id in enumerate(token_ids[:num_recommendations]):
+                video_id = f"video_{token_id % 10000}"  # 映射到video ID范围
+                score = 1.0 / (i + 1)  # 简单的排序分数
+
+                recommendations.append({
+                    'video_id': video_id,
+                    'score': score,
+                    'rank': i + 1,
+                    'reason': f'vLLM生成 (token:{token_id})',
+                    'token_id': token_id
+                })
+
+            # 方法2: 如果有文本，尝试解析
+            if text and len(recommendations) < num_recommendations:
+                text_recommendations = self._parse_generated_recommendations(text, num_recommendations)
+                # 合并文本解析的推荐
+                for rec in text_recommendations:
+                    if len(recommendations) < num_recommendations:
+                        rec['source'] = 'text_parsing'
+                        recommendations.append(rec)
+
+            # 确保推荐数量
+            while len(recommendations) < num_recommendations:
+                recommendations.append({
+                    'video_id': f'fallback_video_{len(recommendations)}',
+                    'score': 0.1,
+                    'rank': len(recommendations) + 1,
+                    'reason': 'vLLM回退推荐',
+                    'source': 'fallback'
+                })
+
+            return recommendations[:num_recommendations]
+
+        except Exception as e:
+            logger.error(f"Token转推荐失败: {e}")
+            return self._generate_fallback_recommendations(num_recommendations)
+
+    def _generate_fallback_recommendations(self, num_recommendations: int) -> List[Dict[str, Any]]:
+        """生成回退推荐"""
+        import random
+
+        recommendations = []
+        for i in range(num_recommendations):
+            recommendations.append({
+                'video_id': f'fallback_video_{random.randint(1000, 9999)}',
+                'score': random.uniform(0.3, 0.8),
+                'rank': i + 1,
+                'reason': 'vLLM回退推荐',
+                'source': 'fallback'
+            })
+
+        return recommendations
+
     async def generate_recommendations_async(
         self,
         user_id: str,

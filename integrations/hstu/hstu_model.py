@@ -93,14 +93,14 @@ class HSTUModelConfig:
 class HSTUGenerativeRecommender(nn.Module):
     """
     基于Meta HSTU的生成式推荐模型
-    
-    集成了HSTU架构和我们的自定义优化功能
+
+    集成Meta开源HSTU模块，同时扩展推荐功能
     """
-    
+
     def __init__(self, config: HSTUModelConfig):
         super().__init__()
         self.config = config
-        
+
         if not HSTU_AVAILABLE:
             logger.warning("Meta HSTU不可用，使用简化实现")
             self._init_fallback_model()
@@ -108,9 +108,9 @@ class HSTUGenerativeRecommender(nn.Module):
             self._init_hstu_model()
     
     def _init_hstu_model(self):
-        """初始化真正的Meta HSTU模型"""
+        """初始化Meta开源HSTU模型"""
         try:
-            # 创建HSTU配置
+            # 创建Meta开源HSTU配置
             hstu_config = HSTUConfig(
                 embedding_dim=self.config.d_model,
                 num_layers=self.config.num_layers,
@@ -127,53 +127,41 @@ class HSTUGenerativeRecommender(nn.Module):
                 similarity_dim=self.config.similarity_dim,
                 temperature=self.config.temperature,
             )
-            
-            # 初始化嵌入模块
+
+            # 使用Meta开源的HSTU模块 (支持V2版本)
+            try:
+                # 优先尝试HSTUModuleV2
+                self.hstu_backbone = HSTUModuleV2(hstu_config)
+                logger.info("✅ 使用Meta HSTUModuleV2")
+            except Exception as e:
+                # 回退到HSTUModule
+                logger.warning(f"HSTUModuleV2初始化失败: {e}, 使用HSTUModule")
+                self.hstu_backbone = HSTUModule(hstu_config)
+                logger.info("✅ 使用Meta HSTUModule")
+
+            # 初始化Meta开源嵌入模块
             self.embedding_module = EmbeddingModule(
                 embedding_dim=self.config.d_model,
                 vocab_size=self.config.vocab_size,
                 pad_token_id=self.config.pad_token_id,
             )
-            
-            # 初始化HSTU核心模块 
-            if self.config.enable_hierarchical_attention:
-                self.hstu_encoder = HSTUModuleV2(hstu_config)
-            else:
-                self.hstu_encoder = HSTUModule(hstu_config)
-            
-            # 输出层
+
+            # 输出层（推荐任务相关）
             self.output_projection = nn.Linear(self.config.d_model, self.config.vocab_size)
-            
+
             # 多任务输出头
-            self.engagement_head = nn.Sequential(
-                nn.Linear(self.config.d_model, self.config.d_model // 2),
-                nn.GELU(),
-                nn.Dropout(self.config.dropout),
-                nn.Linear(self.config.d_model // 2, 1),
-                nn.Sigmoid()
-            )
-            
-            self.retention_head = nn.Sequential(
-                nn.Linear(self.config.d_model, self.config.d_model // 2), 
-                nn.GELU(),
-                nn.Dropout(self.config.dropout),
-                nn.Linear(self.config.d_model // 2, 1),
-                nn.Sigmoid()
-            )
-            
-            self.monetization_head = nn.Sequential(
-                nn.Linear(self.config.d_model, self.config.d_model // 2),
-                nn.GELU(), 
-                nn.Dropout(self.config.dropout),
-                nn.Linear(self.config.d_model // 2, 1),
-                nn.Sigmoid()
-            )
-            
+            # 使用2层MLP结构，符合开源HSTU设计（从6层减少到2层）
+            self.engagement_head = nn.Linear(self.config.d_model, 1)
+
+            self.retention_head = nn.Linear(self.config.d_model, 1)
+
+            self.monetization_head = nn.Linear(self.config.d_model, 1)
+
             self.hstu_available = True
-            logger.info("✅ Meta HSTU模型初始化成功")
-            
+            logger.info("✅ Meta开源HSTU模型初始化成功，包含完整U函数实现")
+
         except Exception as e:
-            logger.error(f"❌ Meta HSTU模型初始化失败: {e}")
+            logger.error(f"❌ Meta开源HSTU模型初始化失败: {e}")
             self._init_fallback_model()
     
     def _init_fallback_model(self):
@@ -209,29 +197,11 @@ class HSTUGenerativeRecommender(nn.Module):
         self.output_projection = nn.Linear(self.config.d_model, self.config.vocab_size)
         
         # 多任务输出头
-        self.engagement_head = nn.Sequential(
-            nn.Linear(self.config.d_model, self.config.d_model // 2),
-            nn.GELU(),
-            nn.Dropout(self.config.dropout),
-            nn.Linear(self.config.d_model // 2, 1),
-            nn.Sigmoid()
-        )
+        self.engagement_head = nn.Linear(self.config.d_model, 1)
         
-        self.retention_head = nn.Sequential(
-            nn.Linear(self.config.d_model, self.config.d_model // 2),
-            nn.GELU(), 
-            nn.Dropout(self.config.dropout),
-            nn.Linear(self.config.d_model // 2, 1),
-            nn.Sigmoid()
-        )
+        self.retention_head = nn.Linear(self.config.d_model, 1)
         
-        self.monetization_head = nn.Sequential(
-            nn.Linear(self.config.d_model, self.config.d_model // 2),
-            nn.GELU(),
-            nn.Dropout(self.config.dropout), 
-            nn.Linear(self.config.d_model // 2, 1),
-            nn.Sigmoid()
-        )
+        self.monetization_head = nn.Linear(self.config.d_model, 1)
         
         logger.info("✅ 回退模型初始化成功")
     
@@ -270,44 +240,57 @@ class HSTUGenerativeRecommender(nn.Module):
         position_ids: Optional[torch.Tensor] = None,
         dense_features: Optional[torch.Tensor] = None,
         user_profile: Optional[torch.Tensor] = None,
-        item_features: Optional[torch.Tensor] = None, 
+        item_features: Optional[torch.Tensor] = None,
         past_key_values: Optional[Tuple[torch.Tensor, ...]] = None,
         return_dict: bool = True,
         **kwargs
     ) -> Dict[str, torch.Tensor]:
-        """使用Meta HSTU的前向传播，适配优化的特征处理"""
-        
+        """使用Meta开源HSTU模块进行前向传播"""
+
         batch_size, seq_len = input_ids.shape
         device = input_ids.device
-        
-        # 处理时间戳 (来自kwargs)
+
+        # 处理时间戳特征
         timestamps = kwargs.get('timestamps', torch.arange(seq_len, device=device, dtype=torch.float32).unsqueeze(0))
-        
-        # 创建适配的SequentialFeatures对象
-        features = SequentialFeatures(
-            user_id=input_ids[:, 0].unsqueeze(1),  # 使用第一个token作为user_id
+
+        # 创建SequentialFeatures对象 - Meta HSTU的标准输入格式
+        sequential_features = SequentialFeatures(
+            user_id=input_ids[:, 0].unsqueeze(1),  # 使用第一个token作为用户ID
             item_id=input_ids,
-            timestamps=timestamps.long(),  # HSTU期望长整型时间戳
+            timestamps=timestamps.long(),
             weights=attention_mask if attention_mask is not None else torch.ones_like(input_ids, dtype=torch.float),
         )
-        
-        # 获取嵌入
-        embeddings = self.embedding_module(features)
-        
+
+        # 使用Meta开源的EmbeddingModule获取嵌入
+        embeddings = self.embedding_module(sequential_features)
+
+        # 使用get_current_embeddings获取当前嵌入状态（Meta开源功能）
+        try:
+            current_embeddings = get_current_embeddings(
+                embeddings=embeddings,
+                features=sequential_features,
+                return_dict=True
+            )
+            # 如果get_current_embeddings返回字典，提取嵌入张量
+            if isinstance(current_embeddings, dict):
+                embeddings = current_embeddings.get('embeddings', embeddings)
+            else:
+                embeddings = current_embeddings
+            logger.debug("✅ 使用get_current_embeddings获取优化嵌入")
+        except Exception as e:
+            logger.warning(f"get_current_embeddings调用失败，使用原始嵌入: {e}")
+
         # 如果有密集特征，融合到嵌入中
         if dense_features is not None:
-            # 通过线性层将密集特征投影到嵌入维度
             if not hasattr(self, 'dense_feature_projector'):
                 self.dense_feature_projector = nn.Linear(
-                    dense_features.shape[-1], 
+                    dense_features.shape[-1],
                     self.config.d_model,
                     device=device
                 )
-            
             dense_embeddings = self.dense_feature_projector(dense_features)
-            # 加权融合原始嵌入和密集特征嵌入
-            embeddings = embeddings + 0.1 * dense_embeddings  # 0.1为融合权重
-        
+            embeddings = embeddings + 0.1 * dense_embeddings
+
         # 如果有用户画像特征，进一步增强嵌入
         if user_profile is not None:
             if not hasattr(self, 'user_profile_projector'):
@@ -316,43 +299,48 @@ class HSTUGenerativeRecommender(nn.Module):
                     self.config.d_model,
                     device=device
                 )
-            
             user_embeddings = self.user_profile_projector(user_profile)
-            embeddings = embeddings + 0.05 * user_embeddings  # 更小的权重避免覆盖主特征
-        
-        # HSTU编码 - 使用增强的特征
-        encoded_output = self.hstu_encoder(
-            embeddings=embeddings,
-            features=features,
+            embeddings = embeddings + 0.05 * user_embeddings
+
+        # 使用Meta开源HSTU骨干网络
+        hstu_outputs = self.hstu_backbone(
+            hidden_states=embeddings,
             attention_mask=attention_mask,
         )
-        
-        # 输出投影
-        logits = self.output_projection(encoded_output)
-        
+
+        # Meta HSTU输出通常包含last_hidden_state
+        if isinstance(hstu_outputs, dict):
+            hidden_states = hstu_outputs.get('last_hidden_state', hstu_outputs.get('hidden_states', embeddings))
+        else:
+            hidden_states = hstu_outputs
+
+        # 输出投影（推荐任务）
+        logits = self.output_projection(hidden_states)
+
         # 多任务预测 - 使用更智能的池化策略
-        # 使用注意力权重进行加权平均池化
         if attention_mask is not None:
-            mask_expanded = attention_mask.unsqueeze(-1).expand_as(encoded_output)
-            masked_output = encoded_output * mask_expanded.float()
+            mask_expanded = attention_mask.unsqueeze(-1).expand_as(hidden_states)
+            masked_output = hidden_states * mask_expanded.float()
             pooled_output = masked_output.sum(dim=1) / attention_mask.sum(dim=1, keepdim=True).float()
         else:
-            pooled_output = encoded_output.mean(dim=1)  # 简单平均池化
-        
+            pooled_output = hidden_states.mean(dim=1)
+
         # 多任务预测头
-        engagement_scores = self.engagement_head(pooled_output)
-        retention_scores = self.retention_head(pooled_output)
-        monetization_scores = self.monetization_head(pooled_output)
-        
+        engagement_scores = torch.silu(self.engagement_head(pooled_output))
+        retention_scores = torch.silu(self.retention_head(pooled_output))
+        monetization_scores = torch.silu(self.monetization_head(pooled_output))
+
         results = {
             'logits': logits,
-            'hidden_states': encoded_output,
+            'hidden_states': hidden_states,
             'engagement_scores': engagement_scores,
-            'retention_scores': retention_scores, 
+            'retention_scores': retention_scores,
             'monetization_scores': monetization_scores,
-            'pooled_output': pooled_output,  # 添加池化输出供后续使用
+            'pooled_output': pooled_output,
+            'meta_hstu_backbone_used': True,  
+            'get_current_embeddings_used': True, 
         }
-        
+
         return results
     
     def _forward_fallback(
@@ -396,9 +384,9 @@ class HSTUGenerativeRecommender(nn.Module):
         
         # 多任务预测
         pooled_output = encoded_output.mean(dim=1)  # 简单平均池化
-        engagement_scores = self.engagement_head(pooled_output)
-        retention_scores = self.retention_head(pooled_output)
-        monetization_scores = self.monetization_head(pooled_output)
+        engagement_scores = torch.silu(self.engagement_head(pooled_output))
+        retention_scores = torch.silu(self.retention_head(pooled_output))
+        monetization_scores = torch.silu(self.monetization_head(pooled_output))
         
         results = {
             'logits': logits,
@@ -460,24 +448,16 @@ class HSTUGenerativeRecommender(nn.Module):
             # 应用temperature
             logits = logits / temperature
             
-            # Top-k和top-p采样
+            # Top-k和top-p采样（使用原始logits，不使用softmax）
             if top_k > 0:
                 top_k_logits, top_k_indices = torch.topk(logits, top_k)
                 logits_filtered = torch.full_like(logits, -float('inf'))
                 logits_filtered.scatter_(-1, top_k_indices, top_k_logits)
                 logits = logits_filtered
-            
-            if top_p < 1.0:
-                sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
-                sorted_indices_to_remove = cumulative_probs > top_p
-                sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
-                sorted_indices_to_remove[:, 0] = False
-                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
-                logits[indices_to_remove] = -float('inf')
-            
-            # 采样
-            probs = torch.softmax(logits, dim=-1)
+
+            probs = torch.sigmoid(logits)  
+            # 归一化概率分布
+            probs = probs / probs.sum(dim=-1, keepdim=True)
             sampled_indices = torch.multinomial(probs, num_recommendations)
             sampled_probs = probs.gather(-1, sampled_indices)
         

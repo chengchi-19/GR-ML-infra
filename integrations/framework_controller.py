@@ -25,14 +25,14 @@ logger = logging.getLogger(__name__)
 
 # 导入集成模块
 try:
-    from integrations.hstu.hstu_model import HSTUGenerativeRecommender, HSTUModelConfig, create_hstu_model
+    from integrations.hstu.hstu_model import HSTUGenerativeRecommender, HSTUModelConfig
     from integrations.hstu.feature_processor import create_hstu_feature_processor
     from integrations.hstu.onnx_exporter import export_hstu_model
-    from integrations.vllm.vllm_engine import VLLMRecommenderEngine, VLLMConfig, create_vllm_engine
-    from integrations.tensorrt.tensorrt_engine import TensorRTOptimizedEngine, TensorRTConfig, create_tensorrt_engine
+    from integrations.vllm.vllm_engine import VLLMRecommenderEngine, VLLMConfig
+    from integrations.tensorrt.tensorrt_engine import TensorRTOptimizedEngine, TensorRTConfig
     
     # 导入自定义优化算子
-    from optimizations.triton_ops.trriton_operator_manager import TritonOperatorManager, create_triton_operator_manager
+    from optimizations.triton_ops.trriton_operator_manager import create_triton_operator_manager
     from optimizations.cache.intelligent_cache import IntelligentEmbeddingCache
     
     INTEGRATIONS_AVAILABLE = True
@@ -541,37 +541,58 @@ class OpenSourceFrameworkController:
             except Exception as e:
                 logger.warning(f"ONNX导出失败，继续使用PyTorch模型: {e}")
         
-        # Step 3: TensorRT优化推理
+        # Step 3: TensorRT Prefill推理（生成KV Cache）
+        kv_cache = None
+        prefill_logits = None
+
         if self.framework_availability['tensorrt']:
-            logger.info("使用TensorRT进行GPU优化推理...")
+            logger.info("使用TensorRT进行GPU优化Prefill推理...")
             try:
-                trt_outputs = self.tensorrt_engine.infer(hstu_inputs)
+                # 使用新的TensorRT Prefill方法，返回KV Cache
+                trt_outputs = self.tensorrt_engine.infer_prefill_with_kv_cache(
+                    inputs=hstu_inputs,
+                    return_kv_cache=True
+                )
+
+                # 提取KV Cache和logits
+                kv_cache = trt_outputs.get('kv_cache')
+                prefill_logits = trt_outputs.get('logits')
                 optimized_logits = trt_outputs
+
                 pipeline_stages['tensorrt_optimization'] = True
-                logger.info("✅ TensorRT优化推理完成")
+                logger.info(f"✅ TensorRT Prefill完成，KV Cache: {kv_cache is not None}")
+
             except Exception as e:
-                logger.warning(f"TensorRT推理失败，回退到PyTorch: {e}")
+                logger.warning(f"TensorRT Prefill推理失败，回退到PyTorch: {e}")
                 optimized_logits = self._pytorch_fallback_inference(hstu_inputs)
         else:
             logger.warning("TensorRT不可用，使用PyTorch推理")
             optimized_logits = self._pytorch_fallback_inference(hstu_inputs)
-        
-        # Step 4: VLLM推理服务优化
+
+        # Step 4: vLLM Decode推理服务（使用KV Cache）
         if self.framework_availability['vllm']:
-            logger.info("使用VLLM进行推理服务优化...")
+            logger.info("使用vLLM进行Decode推理服务...")
             try:
-                final_result = self._vllm_service_optimization(
-                    optimized_logits, user_id, session_id, user_behaviors, num_recommendations
+                # 关键：将KV Cache传递给vLLM进行真正的Decode生成
+                final_result = self._vllm_decode_with_kv_cache(
+                    user_id=user_id,
+                    session_id=session_id,
+                    user_behaviors=user_behaviors,
+                    num_recommendations=num_recommendations,
+                    prefill_kv_cache=kv_cache,
+                    prefill_logits=prefill_logits,
+                    optimized_logits=optimized_logits
                 )
                 pipeline_stages['vllm_service'] = True
-                logger.info("✅ VLLM服务优化完成")
+                logger.info("✅ vLLM Decode服务完成")
+
             except Exception as e:
-                logger.warning(f"VLLM服务优化失败，使用标准后处理: {e}")
+                logger.warning(f"vLLM Decode服务失败，使用标准后处理: {e}")
                 final_result = self._standard_post_processing(
                     optimized_logits, user_id, session_id, user_behaviors, num_recommendations
                 )
         else:
-            logger.warning("VLLM不可用，使用标准后处理")
+            logger.warning("vLLM不可用，使用标准后处理")
             final_result = self._standard_post_processing(
                 optimized_logits, user_id, session_id, user_behaviors, num_recommendations
             )
@@ -585,6 +606,54 @@ class OpenSourceFrameworkController:
         })
         
         return final_result
+
+    def _vllm_decode_with_kv_cache(
+        self,
+        user_id: str,
+        session_id: str,
+        user_behaviors: List[Dict[str, Any]],
+        num_recommendations: int,
+        prefill_kv_cache: Optional[Dict[str, torch.Tensor]] = None,
+        prefill_logits: Optional[torch.Tensor] = None,
+        optimized_logits: Optional[Dict[str, torch.Tensor]] = None
+    ) -> Dict[str, Any]:
+        """使用vLLM进行Decode推理（基于TensorRT Prefill的KV Cache）"""
+
+        try:
+            logger.info("🔄 开始vLLM Decode推理（使用KV Cache）")
+
+            # 调用vLLM引擎的KV Cache推理方法
+            result = self.vllm_engine.generate_recommendations_with_kv_cache(
+                user_id=user_id,
+                session_id=session_id,
+                user_behaviors=user_behaviors,
+                prefill_kv_cache=prefill_kv_cache,
+                prefill_logits=prefill_logits,
+                num_recommendations=num_recommendations,
+                max_new_tokens=50,
+                temperature=0.8,
+                top_p=0.95,
+                top_k=50
+            )
+
+            # 添加pipeline信息
+            result.update({
+                'prefill_decode_split': True,
+                'prefill_engine': 'tensorrt',
+                'decode_engine': 'vllm',
+                'kv_cache_transferred': prefill_kv_cache is not None,
+                'pipeline_mode': 'tensorrt_prefill_vllm_decode'
+            })
+
+            logger.info(f"✅ vLLM Decode完成，生成{len(result.get('recommendations', []))}个推荐")
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ vLLM Decode推理失败: {e}")
+            # 回退到标准后处理
+            return self._standard_post_processing(
+                optimized_logits, user_id, session_id, user_behaviors, num_recommendations
+            )
     
     def _export_onnx_model_if_needed(self) -> Dict[str, Any]:
         """按需导出ONNX模型（缓存机制）"""

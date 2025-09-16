@@ -2,7 +2,7 @@
 
 ## 📋 项目概述
 
-这是一个基于**开源框架**的生成式推荐模型推理优化项目，集成了Meta开源的HSTU模型、VLLM推理引擎、TensorRT加速引擎、自定义Triton和CUTLASS算子：
+这是一个基于**开源框架**的生成式推荐模型推理优化部署项目，集成了Meta开源的生成式HSTU模型、自定义Triton和CUTLASS算子、TensorRT加速引擎、VLLM推理引擎：
 - **Meta HSTU** (Hierarchical Sequential Transduction Units) 生成式推荐模型
 - **VLLM** (PagedAttention + Continuous Batching) 推理优化框架  
 - **TensorRT** GPU推理加速引擎
@@ -60,39 +60,6 @@ python main.py --action=config --config-file=my_config.json
 
 # 运行简单推理测试
 python main.py --action=test
-```
-
-## 📁 项目结构
-
-```
-GR-ML-infra/
-├── api_server.py                     # 🌐 API服务主程序
-├── api_client_demo.py               # 📖 API客户端演示
-├── start_api_server.sh              # 🚀 API服务启动脚本
-├── main.py                          # 🔧 配置和测试工具
-├── integrations/                    # 🔌 开源框架集成
-│   ├── hstu/                        # Meta HSTU模型集成
-│   │   ├── hstu_model.py           # HSTU模型实现
-│   │   ├── feature_processor.py   # 特征处理器
-│   │   └── onnx_exporter.py        # ONNX导出器
-│   ├── vllm/                        # VLLM推理引擎
-│   │   └── vllm_engine.py
-│   ├── tensorrt/                    # TensorRT加速引擎
-│   │   └── tensorrt_engine.py
-│   └── framework_controller.py      # 统一框架控制器
-├── optimizations/                   # ⚡ 自定义优化算子
-│   ├── triton_ops/                  # Triton自定义算子
-│   ├── cutlass_ops/                 # CUTLASS算子
-│   └── cache/                       # 智能GPU热缓存
-│       └── intelligent_cache.py
-├── examples/                        # 📖 使用示例
-│   └── client_example.py
-├── tests/                           # 🧪 测试代码
-│   ├── test_integration.py
-│   └── test_triton_integration.py
-└── docs/                            # 📚 项目文档
-    ├── TECHNICAL_SUMMARY.md
-    └── API服务部署指南.md
 ```
 
 ## 🔧 核心功能模块
@@ -168,25 +135,6 @@ def infer_with_unified_pipeline(self, user_behaviors, ...):
 - **自动优化链**: 从模型到服务的完整优化链路
 - **完整监控体系**: 实时性能监控和调优
 
-## 📊 性能指标
-
-### A100 GPU单卡性能 (实测)
-- **单次推理延迟**: 30-45ms (优化后)，原始100-120ms
-- **批量推理吞吐量**: 2000-3000 RPS
-- **GPU利用率**: 85-92% (相比基线60-70%显著提升)
-- **P95延迟**: <100ms (生产环境要求)
-- **并发处理能力**: 支持128个并发用户会话
-
-### 性能优化成果对比
-
-| 优化阶段 | 延迟改善 | 吞吐量提升 | 内存节省 |
-|---------|----------|-----------|----------|
-| **基线PyTorch** | 100% | 100% | 100% |
-| **+HSTU特征优化** | -15% | +20% | -10% |
-| **+ONNX导出** | -25% | +35% | -15% |
-| **+TensorRT加速** | -45% | +180% | -30% |
-| **+VLLM服务** | -60% | +320% | -40% |
-| **+自定义算子** | -70% | +380% | -50% |
 
 ## 🧪 测试和验证
 
@@ -211,4 +159,4 @@ python api_client_demo.py
 
 ---
 
-**🎯 项目重点**: 这是一个基于开源框架的推荐系统推理优化项目，通过集成Meta HSTU、VLLM、TensorRT等顶级开源技术，实现了生产级的高性能推理系统。项目针对生成式推荐模型HSTU自定义了多个Triton和CUTLASS算子，通过TensorRT加速引擎进行加速，最后通过VLLM推理引擎进行推理，实现了生产级的高性能推理系统。是推理优化的完整解决方案。通过集成多种开源框架，本项目实现了**1+1+1+1>4的协同效应**，为大规模推荐系统推理优化提供了完整的解决方案。
+**🎯 项目重点**: 这是一个基于开源框架的推荐系统推理优化项目，通过集成Meta HSTU、VLLM、TensorRT等顶级开源技术，实现了生成式推荐模型的推理优化部署流程。项目针对生成式推荐模型HSTU自定义了多个Triton和CUTLASS算子，通过TensorRT推理引擎进行加速，最后通过VLLM推理引擎进行推理。通过集成多种开源框架，本项目实现了**1+1+1+1>4的协同效应**，为推荐系统推理优化提供了完整的解决方案。
