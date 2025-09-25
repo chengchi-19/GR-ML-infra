@@ -149,10 +149,10 @@ class OpenSourceFrameworkController:
             self.framework_availability['hstu'] = False
     
     def _initialize_vllm_engine(self):
-        """初始化VLLM引擎"""
+        """初始化VLLM引擎（集成TensorRT优化）"""
         try:
             vllm_config_dict = self.config.get('vllm', {})
-            
+
             # 创建VLLM配置
             vllm_config = VLLMConfig(
                 model_name=vllm_config_dict.get('model_name', 'hstu-generative-recommender'),
@@ -164,17 +164,21 @@ class OpenSourceFrameworkController:
                 dtype=vllm_config_dict.get('dtype', 'float16'),
                 seed=vllm_config_dict.get('seed', 42),
             )
-            
-            # 创建VLLM引擎（传入HSTU模型作为后备）
-            self.vllm_engine = VLLMRecommenderEngine(vllm_config, self.hstu_model)
-            
+
+            # 创建VLLM引擎（传入HSTU模型和TensorRT引擎）
+            self.vllm_engine = VLLMRecommenderEngine(
+                vllm_config,
+                self.hstu_model,
+                self.tensorrt_engine  # 传入TensorRT引擎以便加载优化引擎
+            )
+
             self.framework_availability['vllm'] = self.vllm_engine.vllm_available
-            
+
             if self.framework_availability['vllm']:
-                logger.info("✅ VLLM推理引擎初始化成功")
+                logger.info("✅ VLLM推理引擎初始化成功（集成TensorRT优化）")
             else:
                 logger.warning("⚠️ VLLM不可用，将使用HSTU模型回退")
-                
+
         except Exception as e:
             logger.error(f"❌ VLLM引擎初始化失败: {e}")
             self.framework_availability['vllm'] = False
@@ -466,210 +470,113 @@ class OpenSourceFrameworkController:
         
         统一流程: HSTU模型 -> ONNX导出 -> TensorRT优化 -> VLLM推理服务
         """
-        
+
         start_time = time.time()
-        
+
         try:
-            # 应用自定义算子优化
-            optimized_features = self._apply_custom_optimizations(user_behaviors)
-            
-            # 执行统一推理流水线
-            result = self._unified_inference_pipeline(
-                user_id, session_id, user_behaviors, num_recommendations, **kwargs
+            logger.info(f"🚀 开始新架构统一推理 (用户: {user_id})")
+
+            # Step 1: TensorRT编译期优化检查
+            tensorrt_optimization_ready = (
+                self.framework_availability['tensorrt'] and
+                self.tensorrt_engine and
+                self.tensorrt_engine.is_compilation_ready()
             )
-            
-            # 记录性能统计
-            inference_time = time.time() - start_time
-            self._update_performance_stats('unified_pipeline', inference_time)
-            
-            # 添加元信息
-            result.update({
-                'inference_pipeline': 'unified',
-                'inference_time_ms': inference_time * 1000,
-                'framework_status': self.framework_availability.copy(),
-                'optimizations_applied': bool(optimized_features),
-                'timestamp': datetime.now().isoformat(),
-            })
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"推理失败: {e}")
-            return {
-                'error': str(e),
-                'user_id': user_id,
-                'session_id': session_id,
-                'strategy': strategy,
-                'timestamp': datetime.now().isoformat()
-            }
-    
-    def _unified_inference_pipeline(
-        self,
-        user_id: str,
-        session_id: str,
-        user_behaviors: List[Dict[str, Any]],
-        num_recommendations: int,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """统一推理流水线: HSTU模型 -> ONNX导出 -> TensorRT优化 -> VLLM推理服务"""
-        
-        pipeline_stages = {
-            'hstu_feature_extraction': False,
-            'onnx_export': False, 
-            'tensorrt_optimization': False,
-            'vllm_service': False
-        }
-        
-        # Step 1: HSTU模型特征提取
-        if self.framework_availability['hstu']:
-            hstu_inputs = self._prepare_hstu_inputs(user_behaviors)
-            logger.info("✅ HSTU特征提取完成")
-            pipeline_stages['hstu_feature_extraction'] = True
-        else:
-            logger.warning("HSTU模型不可用，使用简化特征提取")
-            hstu_inputs = self._fallback_feature_extraction(user_behaviors)
-        
-        # Step 2: 动态ONNX导出（如果需要且模型可用）
-        onnx_exported = False
-        if self.framework_availability['hstu'] and kwargs.get('enable_onnx_export', True):
-            try:
-                onnx_result = self._export_onnx_model_if_needed()
-                if onnx_result.get('success', False):
-                    logger.info("✅ ONNX模型导出/验证完成")
-                    pipeline_stages['onnx_export'] = True
-                    onnx_exported = True
-            except Exception as e:
-                logger.warning(f"ONNX导出失败，继续使用PyTorch模型: {e}")
-        
-        # Step 3: TensorRT Prefill推理（生成KV Cache）
-        kv_cache = None
-        prefill_logits = None
 
-        if self.framework_availability['tensorrt']:
-            logger.info("使用TensorRT进行GPU优化Prefill推理...")
-            try:
-                # 使用新的TensorRT Prefill方法，返回KV Cache
-                trt_outputs = self.tensorrt_engine.infer_prefill_with_kv_cache(
-                    inputs=hstu_inputs,
-                    return_kv_cache=True
-                )
+            if tensorrt_optimization_ready:
+                logger.info("✅ TensorRT编译期优化可用")
+                tensorrt_stats = self.tensorrt_engine.get_optimization_profile()
+                logger.info(f"TensorRT优化配置: {tensorrt_stats}")
+            else:
+                logger.info("⚠️ TensorRT编译期优化不可用，使用标准推理")
 
-                # 提取KV Cache和logits
-                kv_cache = trt_outputs.get('kv_cache')
-                prefill_logits = trt_outputs.get('logits')
-                optimized_logits = trt_outputs
+            # Step 2: 应用自定义算子优化（预处理）
+            optimized_features = self._apply_custom_optimizations(user_behaviors)
 
-                pipeline_stages['tensorrt_optimization'] = True
-                logger.info(f"✅ TensorRT Prefill完成，KV Cache: {kv_cache is not None}")
+            # Step 3: VLLM完整推理（Prefill + Decode）
+            if self.framework_availability['vllm']:
+                logger.info("🔥 使用VLLM执行完整推理流程...")
 
-            except Exception as e:
-                logger.warning(f"TensorRT Prefill推理失败，回退到PyTorch: {e}")
-                optimized_logits = self._pytorch_fallback_inference(hstu_inputs)
-        else:
-            logger.warning("TensorRT不可用，使用PyTorch推理")
-            optimized_logits = self._pytorch_fallback_inference(hstu_inputs)
-
-        # Step 4: vLLM Decode推理服务（使用KV Cache）
-        if self.framework_availability['vllm']:
-            logger.info("使用vLLM进行Decode推理服务...")
-            try:
-                # 关键：将KV Cache传递给vLLM进行真正的Decode生成
-                final_result = self._vllm_decode_with_kv_cache(
+                # VLLM会自动检测和使用TensorRT优化引擎
+                result = self.vllm_engine.generate_recommendations_complete(
                     user_id=user_id,
                     session_id=session_id,
                     user_behaviors=user_behaviors,
                     num_recommendations=num_recommendations,
-                    prefill_kv_cache=kv_cache,
-                    prefill_logits=prefill_logits,
-                    optimized_logits=optimized_logits
+                    enable_paged_attention=True,  # 启用PagedAttention优化
+                    temperature=kwargs.get('temperature', 0.8),
+                    top_p=kwargs.get('top_p', 0.95),
+                    top_k=kwargs.get('top_k', 50),
+                    max_tokens=kwargs.get('max_tokens', 100)
                 )
-                pipeline_stages['vllm_service'] = True
-                logger.info("✅ vLLM Decode服务完成")
 
-            except Exception as e:
-                logger.warning(f"vLLM Decode服务失败，使用标准后处理: {e}")
-                final_result = self._standard_post_processing(
-                    optimized_logits, user_id, session_id, user_behaviors, num_recommendations
+                # 添加pipeline信息
+                result.update({
+                    'pipeline_architecture': 'vllm_complete_with_tensorrt_optimization',
+                    'tensorrt_compilation_applied': tensorrt_optimization_ready,
+                    'custom_operators_applied': optimized_features is not None,
+                    'pipeline_stages': {
+                        'tensorrt_compilation': tensorrt_optimization_ready,
+                        'vllm_complete_inference': True,
+                        'custom_optimizations': optimized_features is not None
+                    }
+                })
+
+                logger.info("✅ VLLM完整推理流程完成")
+
+            else:
+                # 回退到HSTU模型推理
+                logger.warning("VLLM不可用，回退到HSTU模型推理")
+                result = self._infer_with_hstu(
+                    user_id, session_id, user_behaviors, num_recommendations, **kwargs
                 )
-        else:
-            logger.warning("vLLM不可用，使用标准后处理")
-            final_result = self._standard_post_processing(
-                optimized_logits, user_id, session_id, user_behaviors, num_recommendations
-            )
-        
-        # 添加管道信息
-        final_result.update({
-            'engine_type': 'unified_pipeline',
-            'pipeline_stages': pipeline_stages,
-            'pipeline_completion_rate': sum(pipeline_stages.values()) / len(pipeline_stages),
-            'onnx_exported': onnx_exported,
-        })
-        
-        return final_result
 
-    def _vllm_decode_with_kv_cache(
-        self,
-        user_id: str,
-        session_id: str,
-        user_behaviors: List[Dict[str, Any]],
-        num_recommendations: int,
-        prefill_kv_cache: Optional[Dict[str, torch.Tensor]] = None,
-        prefill_logits: Optional[torch.Tensor] = None,
-        optimized_logits: Optional[Dict[str, torch.Tensor]] = None
-    ) -> Dict[str, Any]:
-        """使用vLLM进行Decode推理（基于TensorRT Prefill的KV Cache）"""
+                result.update({
+                    'pipeline_architecture': 'hstu_fallback',
+                    'tensorrt_compilation_applied': False,
+                    'custom_operators_applied': False,
+                    'fallback_reason': 'vllm_unavailable'
+                })
 
-        try:
-            logger.info("🔄 开始vLLM Decode推理（使用KV Cache）")
+            # 记录性能统计
+            inference_time = time.time() - start_time
+            self._update_performance_stats('unified_pipeline_v2', inference_time)
 
-            # 调用vLLM引擎的KV Cache推理方法
-            result = self.vllm_engine.generate_recommendations_with_kv_cache(
-                user_id=user_id,
-                session_id=session_id,
-                user_behaviors=user_behaviors,
-                prefill_kv_cache=prefill_kv_cache,
-                prefill_logits=prefill_logits,
-                num_recommendations=num_recommendations,
-                max_new_tokens=50,
-                temperature=0.8,
-                top_p=0.95,
-                top_k=50
-            )
-
-            # 添加pipeline信息
+            # 添加统一的元信息
             result.update({
-                'prefill_decode_split': True,
-                'prefill_engine': 'tensorrt',
-                'decode_engine': 'vllm',
-                'kv_cache_transferred': prefill_kv_cache is not None,
-                'pipeline_mode': 'tensorrt_prefill_vllm_decode'
+                'inference_pipeline': 'unified_v2',
+                'inference_time_ms': inference_time * 1000,
+                'framework_status': self.framework_availability.copy(),
+                'timestamp': datetime.now().isoformat(),
             })
 
-            logger.info(f"✅ vLLM Decode完成，生成{len(result.get('recommendations', []))}个推荐")
             return result
 
         except Exception as e:
-            logger.error(f"❌ vLLM Decode推理失败: {e}")
-            # 回退到标准后处理
-            return self._standard_post_processing(
-                optimized_logits, user_id, session_id, user_behaviors, num_recommendations
-            )
-    
+            logger.error(f"❌ 新架构统一推理失败: {e}")
+            return {
+                'error': str(e),
+                'user_id': user_id,
+                'session_id': session_id,
+                'pipeline_architecture': 'error',
+                'timestamp': datetime.now().isoformat()
+            }
+
     def _export_onnx_model_if_needed(self) -> Dict[str, Any]:
         """按需导出ONNX模型（缓存机制）"""
-        
+
         import os
         from pathlib import Path
-        
+
         # 检查是否已有有效的ONNX模型
         onnx_dir = Path("./models")
         onnx_path = onnx_dir / "hstu_unified_pipeline.onnx"
-        
+
         # 如果ONNX文件不存在或过期，重新导出
         if not onnx_path.exists():
             try:
                 logger.info("导出HSTU模型到ONNX...")
-                
+
                 # 使用导入的export_hstu_model函数
                 export_result = export_hstu_model(
                     model=self.hstu_model,
@@ -680,9 +587,9 @@ class OpenSourceFrameworkController:
                     export_inference_only=True,
                     optimize=True
                 )
-                
+
                 return export_result
-                
+
             except Exception as e:
                 logger.error(f"ONNX导出失败: {e}")
                 return {'success': False, 'error': str(e)}

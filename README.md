@@ -4,10 +4,9 @@
 
 这是一个基于**开源框架**的生成式推荐模型推理优化部署项目，集成了Meta开源的生成式HSTU模型、自定义Triton和CUTLASS算子、TensorRT加速引擎、VLLM推理引擎：
 - **Meta HSTU** (Hierarchical Sequential Transduction Units) 生成式推荐模型
-- **VLLM** (PagedAttention + Continuous Batching) 推理优化框架  
-- **TensorRT** GPU推理加速引擎
 - **自定义Triton和CUTLASS算子**优化
-- **智能GPU热缓存**系统
+- **TensorRT** GPU推理加速引擎
+- **VLLM** (PagedAttention + Continuous Batching) 推理优化框架  
 
 ## 🎯 核心特性
 
@@ -22,45 +21,8 @@
 ### 🧠 统一推理流程
 - 🔄 **HSTU模型**: 负责特征提取和序列建模
 - 📤 **ONNX导出**: 将HSTU模型导出为标准ONNX格式
-- ⚡ **TensorRT优化**: GPU加速推理，模型优化
-- 🎯 **VLLM推理服务**: 内存管理和推理服务优化
-
-## 🚀 快速开始
-
-### 1. 环境准备
-
-```bash
-# 克隆项目
-git clone <repository-url>
-cd GR-ML-infra
-
-# 安装依赖
-pip install -r requirements.txt
-
-# 安装开源框架（可选，项目支持智能回退机制）
-pip install vllm tensorrt torchrec fbgemm-gpu
-```
-
-### 2. 启动API服务 (推荐)
-
-```bash
-# 方式1: 使用启动脚本（推荐）
-./start_api_server.sh
-
-# 方式2: 直接启动
-python api_server.py
-
-
-```bash
-# 检查系统框架可用性
-python main.py --action=check
-
-# 生成推理配置文件
-python main.py --action=config --config-file=my_config.json
-
-# 运行简单推理测试
-python main.py --action=test
-```
+- ⚡ **TensorRT编译期优化**: 专注算子融合与Kernel特化，生成优化的引擎文件.engine
+- 🎯 **VLLM端到端推理**: 负责从Prefill到Decode的完整流程，实现高性能生成
 
 ## 🔧 核心功能模块
 
@@ -91,18 +53,19 @@ def infer_with_unified_pipeline(self, user_behaviors, ...):
 ### 3. VLLM推理引擎 (`integrations/vllm/vllm_engine.py`)
 
 **性能优化**:
-- PagedAttention内存优化
-- Continuous Batching批处理优化
-- 智能用户行为分析和推荐生成
+- **端到端推理**: 负责从Prefill到Decode的完整流程
+- **PagedAttention**: KV缓存内存管理，极大提升吞吐
+- **Continuous Batching**: 动态批处理，最大化GPU利用率
+- **TensorRT集成**: 可加载经TensorRT编译优化的模型，获得极致性能
 - 异步推理支持
 
 ### 4. TensorRT优化引擎 (`integrations/tensorrt/tensorrt_engine.py`)
 
-**加速特性**:
-- 从ONNX/HSTU模型自动构建TensorRT引擎
-- 动态形状优化配置
-- FP16/INT8精度优化
-- 自动内存管理和缓冲区优化
+**编译期加速特性**:
+- **离线深度优化**: 专注在模型编译阶段进行算子融合、层消除与精度校准
+- **Kernel特化**: 为特定GPU架构生成高度优化的CUDA Kernel
+- **插件支持**: 集成自定义的高性能CUDA算子
+- **最终产物**: 生成一个优化的 `.engine` 文件，供VLLM等下游引擎加载
 
 ### 5. 智能缓存系统 (`optimizations/cache/intelligent_cache.py`)
 
@@ -139,14 +102,12 @@ def infer_with_unified_pipeline(self, user_behaviors, ...):
 ## 🧪 测试和验证
 
 ```bash
-# 运行集成测试
-python tests/test_integration.py
 
 # 运行Triton算子测试
 python tests/test_triton_integration.py
 
-# API服务完整测试
-python api_client_demo.py
+# 启动API服务
+python api_server.py
 ```
 
 # 🙏 致谢
